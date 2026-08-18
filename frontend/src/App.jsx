@@ -147,7 +147,9 @@ export default function App() {
                 <th>N° Factura</th>
                 <th>Producto</th>
                 <th>Cantidad</th>
-                <th>Costo</th>
+                <th>Subtotal</th>
+                <th>IGV</th>
+                <th>Total</th>
                 <th>Imagen</th>
               </tr>
             </thead>
@@ -166,7 +168,9 @@ export default function App() {
                   <td>{row.n_factura}</td>
                   <td>{row.producto}</td>
                   <td>{row.cantidad}</td>
-                  <td>{formatCosto(row.costo)}</td>
+                  <td>{row.subtotal}</td>
+                  <td>{row.igv}</td>
+                  <td>{row.total}</td>
                   <td>
                     {row.imagen_signed_url ? (
                       <img
