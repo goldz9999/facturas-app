@@ -10,9 +10,9 @@ body {
 }
 
 .container {
-  max-width: 1000px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 32px 16px;
+  padding: 32px 24px;
 }
 
 .header-row {
@@ -240,6 +240,7 @@ h1 {
 
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   background: white;
   border-radius: 8px;
@@ -247,12 +248,66 @@ table {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+th:nth-child(1),
+td:nth-child(1) {
+  width: 9%;
+}
+
+/* Fecha */
+th:nth-child(2),
+td:nth-child(2) {
+  width: 20%;
+}
+
+/* Empresa */
+th:nth-child(3),
+td:nth-child(3) {
+  width: 11%;
+}
+
+/* N° Factura */
+th:nth-child(4),
+td:nth-child(4) {
+  width: 28%;
+}
+
+/* Productos */
+th:nth-child(5),
+td:nth-child(5) {
+  width: 10%;
+}
+
+/* Subtotal */
+th:nth-child(6),
+td:nth-child(6) {
+  width: 9%;
+}
+
+/* IGV */
+th:nth-child(7),
+td:nth-child(7) {
+  width: 9%;
+}
+
+/* Total */
+th:nth-child(8),
+td:nth-child(8) {
+  width: 8%;
+}
+
+/* Imagen */
+
+td {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
 th,
 td {
   text-align: left;
-  padding: 10px 12px;
+  padding: 16px 18px;
   border-bottom: 1px solid #eee;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 th {

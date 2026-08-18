@@ -15,6 +15,41 @@ function formatCosto(costo) {
   return n.toLocaleString('es-PE', { style: 'currency', currency: 'PEN' });
 }
 
+function ProductosCell({ items = [] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const visibleItems = expanded ? items : items.slice(0, 3);
+  const remaining = items.length - 3;
+
+  return (
+    <div>
+      {visibleItems.map((item, index) => (
+        <div key={item.id ?? index}>
+          {item.producto || 'Producto'} (x{item.cantidad ?? 0}) — {formatCosto(item.costo)}
+        </div>
+      ))}
+
+      {items.length > 3 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          style={{
+            marginTop: 4,
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            color: '#2563eb',
+            cursor: 'pointer',
+            fontSize: '0.9rem',
+          }}
+        >
+          {expanded ? 'Ver menos' : `+${remaining} más`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState([]);
   const [total, setTotal] = useState(0);
@@ -65,7 +100,7 @@ export default function App() {
       .channel('facturas-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'tabla_2' },
+        { event: '*', schema: 'public', table: 'facturas' },
         () => {
           fetchData();
         }
@@ -145,8 +180,7 @@ export default function App() {
                 <th>Fecha</th>
                 <th>Empresa</th>
                 <th>N° Factura</th>
-                <th>Producto</th>
-                <th>Cantidad</th>
+                <th>Productos</th>
                 <th>Subtotal</th>
                 <th>IGV</th>
                 <th>Total</th>
@@ -156,28 +190,38 @@ export default function App() {
             <tbody>
               {data.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="empty">
+                  <td colSpan={8} className="empty">
                     No hay resultados
                   </td>
                 </tr>
               )}
-              {data.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.fecha}</td>
-                  <td>{row.empresa}</td>
-                  <td>{row.n_factura}</td>
-                  <td>{row.producto}</td>
-                  <td>{row.cantidad}</td>
-                  <td>{row.subtotal}</td>
-                  <td>{row.igv}</td>
-                  <td>{row.total}</td>
+              {data.map((factura) => (
+                <tr key={factura.id}>
+                  <td>{factura.fecha}</td>
+                  <td>{factura.empresa}</td>
+                  <td>{factura.n_factura}</td>
+
                   <td>
-                    {row.imagen_signed_url ? (
+                    <ProductosCell items={factura.factura_items} />
+                  </td>
+
+                  <td>{formatCosto(factura.subtotal)}</td>
+                  <td>{formatCosto(factura.igv)}</td>
+                  <td>{formatCosto(factura.total_factura)}</td>
+
+                  <td>
+                    {factura.imagen_signed_url ? (
                       <img
-                        src={row.imagen_signed_url}
+                        src={factura.imagen_signed_url}
                         alt="Factura"
-                        style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4, cursor: 'pointer' }}
-                        onClick={() => setModalImage(row.imagen_signed_url)}
+                        style={{
+                          width: 64,
+                          height: 64,
+                          objectFit: 'cover',
+                          borderRadius: 6,
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => setModalImage(factura.imagen_signed_url)}
                       />
                     ) : (
                       '-'

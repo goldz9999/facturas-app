@@ -22,8 +22,8 @@ export class FacturasService {
 
     let query = this.supabase
       .getClient()
-      .from('tabla_2')
-      .select('*', { count: 'exact' })
+      .from('facturas')
+      .select('*, factura_items(*)', { count: 'exact' })
       .order('fecha', { ascending: false })
       .range(from, to);
 
