@@ -16,35 +16,59 @@ function formatCosto(costo) {
 }
 
 function ProductosCell({ items = [] }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const visibleItems = expanded ? items : items.slice(0, 3);
-  const remaining = items.length - 3;
+  const [open, setOpen] = useState(false);
+  const LIMITE = 3;
+  const visibleItems = items.slice(0, LIMITE);
+  const remaining = items.length - LIMITE;
+  const hayMas = remaining > 0;
 
   return (
-    <div>
-      {visibleItems.map((item, index) => (
-        <div key={item.id ?? index}>
-          {item.producto || 'Producto'} (x{item.cantidad ?? 0}) — {formatCosto(item.costo)}
-        </div>
-      ))}
+    <div
+      style={{ position: 'relative' }}
+      onMouseEnter={() => hayMas && setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      {/* Vista compacta: siempre ocupa el mismo alto, nunca descuadra la fila */}
+      <div
+        style={{ cursor: hayMas ? 'pointer' : 'default' }}
+        onClick={() => hayMas && setOpen((prev) => !prev)}
+      >
+        {visibleItems.map((item, index) => (
+          <div key={item.id ?? index}>
+            {item.producto || 'Producto'} (x{item.cantidad ?? 0}) — {formatCosto(item.costo)}
+          </div>
+        ))}
 
-      {items.length > 3 && (
-        <button
-          type="button"
-          onClick={() => setExpanded((prev) => !prev)}
+        {hayMas && (
+          <span style={{ color: '#2563eb', fontSize: '0.85rem' }}>
+            +{remaining} más ▾
+          </span>
+        )}
+      </div>
+
+      {/* Popover flotante: se dibuja ENCIMA, no empuja el resto de la tabla */}
+      {open && hayMas && (
+        <div
           style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            zIndex: 20,
             marginTop: 4,
-            padding: 0,
-            border: 'none',
-            background: 'none',
-            color: '#2563eb',
-            cursor: 'pointer',
-            fontSize: '0.9rem',
+            minWidth: 260,
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 8,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+            padding: '8px 12px',
           }}
         >
-          {expanded ? 'Ver menos' : `+${remaining} más`}
-        </button>
+          {items.map((item, index) => (
+            <div key={item.id ?? index} style={{ padding: '2px 0' }}>
+              {item.producto || 'Producto'} (x{item.cantidad ?? 0}) — {formatCosto(item.costo)}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

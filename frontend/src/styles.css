@@ -116,6 +116,60 @@ h1 {
   color: #555;
 }
 
+.modo-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  background: #f1f5f9;
+  border-radius: 8px;
+}
+
+.modo-switch-label {
+  font-size: 13px;
+  color: #475569;
+  font-weight: 500;
+}
+
+.modo-switch-toggle {
+  display: inline-flex;
+  background: #e2e8f0;
+  border-radius: 999px;
+  padding: 2px;
+}
+
+.modo-switch-opcion {
+  border: none;
+  background: transparent;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.modo-switch-opcion.activo {
+  background: #2563eb;
+  color: #fff;
+}
+
+.modo-switch-sync {
+  font-style: italic;
+  color: #94a3b8;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.modo-switch-hint {
+  margin: 0 0 14px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
 .dropzone {
   display: flex;
   flex-direction: column;

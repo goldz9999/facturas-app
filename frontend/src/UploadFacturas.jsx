@@ -40,7 +40,7 @@ export default function UploadFacturas() {
         files.forEach((f) => formData.append('files', f));
 
         try {
-            const res = await fetch(`${API_URL}/facturas/upload`, {
+            const res = await fetch(`${API_URL}/facturas/upload?modo=${modoRef.current}`, {
                 method: 'POST',
                 body: formData,
             });
@@ -139,6 +139,31 @@ export default function UploadFacturas() {
                                 ✕
                             </button>
                         </div>
+
+                        <div className="modo-switch">
+                            <span className="modo-switch-label">
+                                Procesar con: {modoCargando && <em className="modo-switch-sync">(sincronizando…)</em>}
+                            </span>
+                            <div className="modo-switch-toggle" role="group" aria-label="Modo de procesamiento (afecta también al bot de Telegram)">
+                                <button
+                                    type="button"
+                                    className={`modo-switch-opcion ${modo === 'n8n' ? 'activo' : ''}`}
+                                    onClick={() => cambiarModo('n8n')}
+                                >
+                                    n8n
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`modo-switch-opcion ${modo === 'backend' ? 'activo' : ''}`}
+                                    onClick={() => cambiarModo('backend')}
+                                >
+                                    Backend
+                                </button>
+                            </div>
+                        </div>
+                        <p className="modo-switch-hint">
+                            Este modo es global: también decide cómo procesa el bot de Telegram, no solo esta subida.
+                        </p>
 
                         <label className="dropzone">
                             <input
