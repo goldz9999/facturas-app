@@ -3,6 +3,7 @@ import { SupabaseService } from '../common/supabase.service';
 import { GeminiService } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
 import { ModoProcesamiento } from './modo.service';
+import { GastosService } from '../gastos/gastos.service';
 
 const BUCKET = 'Facturas';
 
@@ -31,6 +32,7 @@ export class FacturasService {
   constructor(
     private supabase: SupabaseService,
     private gemini: GeminiService,
+    private gastosService: GastosService,
   ) { }
 
   async findAll(params: FindFacturasParams) {
@@ -87,24 +89,35 @@ export class FacturasService {
   }
   // Punto de entrada único: según "modo" reenvía a n8n (legado) o procesa
   // el archivo directamente en el backend (Gemini + Supabase), sin n8n.
+  // usuarioId es obligatorio en modo 'backend': todo gasto queda vinculado
+  // al usuario que lo subió (RF de trazabilidad).
   async procesarArchivos(
     files: Array<Express.Multer.File>,
     modo: ModoProcesamiento = 'n8n',
+    usuarioId?: number,
   ) {
     if (modo === 'backend') {
-      return this.procesarArchivosEnBackend(files);
+      if (!usuarioId) {
+        throw new InternalServerErrorException(
+          'usuario_id es obligatorio para procesar en modo backend.',
+        );
+      }
+      return this.procesarArchivosEnBackend(files, usuarioId);
     }
     return this.procesarArchivosConN8n(files);
   }
 
   // Reemplaza todo el workflow de n8n: sube la imagen a Supabase Storage,
   // transcribe con Gemini, extrae los datos estructurados y guarda
-  // factura + items en la base de datos.
-  private async procesarArchivosEnBackend(files: Array<Express.Multer.File>) {
+  // el gasto (+ comprobante + evidencia) en el esquema nuevo.
+  private async procesarArchivosEnBackend(
+    files: Array<Express.Multer.File>,
+    usuarioId: number,
+  ) {
     const resultados = await Promise.all(
       files.map(async (file) => {
         try {
-          const resultado = await this.procesarArchivoIndividual(file);
+          const resultado = await this.procesarArchivoIndividual(file, usuarioId);
           return { archivo: file.originalname, ok: true, resultado };
         } catch (err) {
           return {
@@ -119,10 +132,13 @@ export class FacturasService {
     return { resultados };
   }
 
-  // Pipeline completo (subir a Storage + Gemini + guardar en Supabase).
-  // Público porque también lo usa TelegramService para procesar audios/fotos/
-  // documentos recibidos por el bot, sin pasar por n8n.
-  async procesarArchivoIndividual(file: ArchivoEntrada) {
+  // Pipeline completo (subir a Storage + Gemini + guardar en el esquema
+  // gastos/comprobantes/evidencias). Público porque también lo usa
+  // TelegramService para procesar audios/fotos/documentos recibidos por el
+  // bot, sin pasar por n8n. usuarioId identifica quién generó el gasto
+  // (para Telegram: el usuario autorizado que escribió; para el upload
+  // web: el usuario logueado en el frontend).
+  async procesarArchivoIndividual(file: ArchivoEntrada, usuarioId: number) {
     const mimeType = file.mimetype || 'application/octet-stream';
     const esAudio = mimeType.startsWith('audio/');
     const extMap: Record<string, string> = {
@@ -164,69 +180,59 @@ export class FacturasService {
       ? await this.gemini.transcribirAudio(file.buffer, mimeType)
       : await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
 
-    // 3. Extraer datos estructurados con Gemini
-    const datosExtraidos = await this.gemini.extraerFactura(texto);
+    // 3. Extraer datos estructurados con Gemini (prompt distinto si es audio)
+    const datosExtraidos = await this.gemini.extraerFactura(texto, esAudio);
 
     // 4. Normalizar (fecha, items) igual que "Separar articulos1"
     const factura = normalizarFactura(datosExtraidos);
 
-    // 5. Insertar factura
-    const { data: facturaInsertada, error: errorFactura } = await this.supabase
-      .getClient()
-      .from('facturas')
-      .insert({
-        fecha: factura.fecha,
-        empresa: factura.empresa,
-        n_factura: factura.n_factura,
-        subtotal: factura.subtotal || 0,
-        igv: factura.igv || 0,
-        total_factura: factura.total_factura || 0,
-        imagen_url: esAudio ? null : nombreArchivo,
-      })
-      .select()
-      .single();
+    // 5. Guardar el gasto en el esquema nuevo (gastos + comprobante +
+    //    evidencia). Si es audio, no hay comprobante (puede no haber
+    //    factura física) ni evidencia (el audio no se sube a Storage).
+    //    NOTA: los items línea por línea (factura.items) no tienen tabla
+    //    propia todavía en el esquema nuevo; se devuelven en la respuesta
+    //    para el mensaje de Telegram, pero no se persisten aparte. Si se
+    //    necesita el detalle guardado, se puede sumar una tabla
+    //    `comprobante_items` sin tocar esta función.
+    const { gasto } = await this.gastosService.crear({
+      usuario_id: usuarioId,
+      descripcion: factura.empresa || null,
+      monto: factura.total_factura || 0,
+      fecha: factura.fecha,
+      comprobante: esAudio
+        ? null
+        : {
+          tipo: 'factura',
+          numero: factura.n_factura || null,
+          empresa_emisora: factura.empresa || null,
+          subtotal: factura.subtotal,
+          igv: factura.igv,
+          total: factura.total_factura,
+          fecha_documento: factura.fecha,
+        },
+      evidencia: esAudio
+        ? null
+        : {
+          tipo: ext === 'pdf' ? 'pdf' : 'imagen',
+          storage_path: nombreArchivo,
+          origen: 'web',
+        },
+    });
 
-    if (errorFactura) {
-      throw new InternalServerErrorException(
-        `Error guardando la factura: ${errorFactura.message}`,
-      );
-    }
-
-    // 6. Insertar items
-    let itemsInsertados = 0;
-    if (factura.items.length > 0) {
-      const { error: errorItems } = await this.supabase
-        .getClient()
-        .from('factura_items')
-        .insert(
-          factura.items.map((item) => ({
-            factura_id: facturaInsertada.id,
-            producto: item.producto,
-            cantidad: item.cantidad,
-            costo: item.costo,
-          })),
-        );
-      if (errorItems) {
-        throw new InternalServerErrorException(
-          `Error guardando los items: ${errorItems.message}`,
-        );
-      }
-      itemsInsertados = factura.items.length;
-    }
-
-    // 7. Respuesta con la misma forma que devolvía el webhook de n8n,
-    //    más el detalle de items (útil para armar el mensaje de Telegram).
+    // 6. Respuesta con una forma compatible con la que devolvía el webhook
+    //    de n8n (empresa, n_factura, fecha, subtotal, igv, total, items),
+    //    más el id del gasto nuevo (útil para armar el mensaje de Telegram
+    //    y para el flujo de "adjuntar comprobante después").
     return {
       success: true,
-      mensaje: 'Factura procesada correctamente',
-      factura_id: facturaInsertada.id,
+      mensaje: 'Gasto registrado correctamente',
+      gasto_id: gasto.id,
       empresa: factura.empresa,
       n_factura: factura.n_factura,
       fecha: factura.fecha,
       subtotal: factura.subtotal,
       igv: factura.igv,
       total: factura.total_factura || 0,
-      items_insertados: itemsInsertados,
       items: factura.items,
     };
   }

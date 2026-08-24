@@ -21,6 +21,16 @@ export default function UploadFacturas() {
     const [items, setItems] = useState([]); // {id, nombre, estado, mensaje}
     const dragCounterRef = useRef(0);
 
+    // --- Usuario (demo): mientras no hay login, se ingresa el ID a mano.
+    // El frontend definitivo lo reemplazará por el usuario autenticado.
+    const [usuarioId, setUsuarioId] = useState(() => localStorage.getItem('demo_usuario_id') || '');
+    const usuarioIdRef = useRef(usuarioId);
+
+    useEffect(() => {
+        usuarioIdRef.current = usuarioId;
+        localStorage.setItem('demo_usuario_id', usuarioId);
+    }, [usuarioId]);
+
     // --- Modo de procesamiento (global: afecta subida y bot de Telegram) ---
     const [modo, setModo] = useState('n8n');
     const [modoCargando, setModoCargando] = useState(false);
@@ -75,6 +85,12 @@ export default function UploadFacturas() {
         );
         if (files.length === 0) return;
 
+        if (modoRef.current === 'backend' && !usuarioIdRef.current) {
+            setModalOpen(true);
+            alert('Ingresa el ID de usuario antes de subir (obligatorio en modo Backend).');
+            return;
+        }
+
         const nuevos = files.map((f) => ({
             id: idUnico(),
             nombre: f.name,
@@ -88,11 +104,21 @@ export default function UploadFacturas() {
         files.forEach((f) => formData.append('files', f));
 
         try {
-            const res = await fetch(`${API_URL}/facturas/upload?modo=${modoRef.current}`, {
-                method: 'POST',
-                body: formData,
-            });
+            const usuarioQs = usuarioIdRef.current
+                ? `&usuario_id=${encodeURIComponent(usuarioIdRef.current)}`
+                : '';
+            const res = await fetch(
+                `${API_URL}/facturas/upload?modo=${modoRef.current}${usuarioQs}`,
+                {
+                    method: 'POST',
+                    body: formData,
+                },
+            );
             const json = await res.json();
+
+            if (!res.ok) {
+                throw new Error(json?.message || 'Error al subir los archivos');
+            }
 
             setItems((prev) =>
                 prev.map((item) => {
@@ -212,6 +238,22 @@ export default function UploadFacturas() {
                         <p className="modo-switch-hint">
                             Este modo es global: también decide cómo procesa el bot de Telegram, no solo esta subida.
                         </p>
+
+                        {modo === 'backend' && (
+                            <div className="usuario-id-field">
+                                <label htmlFor="usuario-id-input">
+                                    ID de usuario (demo — se reemplazará por login)
+                                </label>
+                                <input
+                                    id="usuario-id-input"
+                                    type="number"
+                                    min="1"
+                                    value={usuarioId}
+                                    onChange={(e) => setUsuarioId(e.target.value)}
+                                    placeholder="ej. 1"
+                                />
+                            </div>
+                        )}
 
                         <label className="dropzone">
                             <input

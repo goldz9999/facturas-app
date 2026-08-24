@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CommonModule } from '../common/common.module';
+import { SupabaseService } from '../common/supabase.service';
 
 export type ModoProcesamiento = 'n8n' | 'backend';
 

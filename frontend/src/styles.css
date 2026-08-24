@@ -170,6 +170,27 @@ h1 {
   color: #94a3b8;
 }
 
+.usuario-id-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.usuario-id-field label {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.usuario-id-field input {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 14px;
+}
+
 .dropzone {
   display: flex;
   flex-direction: column;

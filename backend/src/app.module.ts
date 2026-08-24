@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { FacturasModule } from './facturas/facturas.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { UsuariosModule } from './usuarios/usuarios.module';
+import { GastosModule } from './gastos/gastos.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { UsuariosModule } from './usuarios/usuarios.module';
     FacturasModule,
     TelegramModule,
     UsuariosModule,
+    GastosModule,
   ],
 })
 export class AppModule { }

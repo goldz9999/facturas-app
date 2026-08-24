@@ -1,4 +1,4 @@
-import { FacturaExtraida } from './gemini.service';
+import { FacturaExtraida } from '../ia/gemini.service';
 
 function fechaHoyPeru(): string {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });

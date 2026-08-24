@@ -57,6 +57,8 @@ export class FacturasController {
   // Recibe uno o varios archivos (imágenes o documentos) desde el frontend.
   // "modo" (opcional) permite forzar el modo para esta subida puntual;
   // si no se manda, se usa el modo global configurado con /facturas/modo.
+  // "usuario_id" es obligatorio cuando el modo efectivo es "backend": todo
+  // gasto queda vinculado al usuario que lo subió.
   @Post('upload')
   @UseInterceptors(
     FilesInterceptor('files', 10, {
@@ -66,12 +68,22 @@ export class FacturasController {
   async upload(
     @UploadedFiles() files: Array<Express.Multer.File>,
     @Query('modo') modo?: ModoProcesamiento,
+    @Query('usuario_id') usuarioId?: string,
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('No se recibió ningún archivo.');
     }
     const modoAUsar = modo || (await this.modoService.getModo());
-    return this.facturasService.procesarArchivos(files, modoAUsar);
+    if (modoAUsar === 'backend' && !usuarioId) {
+      throw new BadRequestException(
+        'usuario_id es obligatorio para procesar en modo backend.',
+      );
+    }
+    return this.facturasService.procesarArchivos(
+      files,
+      modoAUsar,
+      usuarioId ? Number(usuarioId) : undefined,
+    );
   }
 
   // El webhook de Telegram (POST /facturas/telegram/webhook) vive ahora en

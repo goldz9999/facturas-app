@@ -75,7 +75,7 @@ export class TelegramService {
             const modo = await this.modoService.getModo();
             const resultado =
                 modo === 'backend'
-                    ? await this.facturasService.procesarArchivoIndividual(archivo)
+                    ? await this.facturasService.procesarArchivoIndividual(archivo, usuario.id)
                     : await this.facturasService.reenviarArchivoAN8n(archivo);
 
             await this.enviarMensaje(chatId, this.armarMensaje(resultado));
