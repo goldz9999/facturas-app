@@ -21,6 +21,54 @@ export default function UploadFacturas() {
     const [items, setItems] = useState([]); // {id, nombre, estado, mensaje}
     const dragCounterRef = useRef(0);
 
+    // --- Modo de procesamiento (global: afecta subida y bot de Telegram) ---
+    const [modo, setModo] = useState('n8n');
+    const [modoCargando, setModoCargando] = useState(false);
+    const modoRef = useRef(modo);
+
+    useEffect(() => {
+        modoRef.current = modo;
+    }, [modo]);
+
+    // Cargar el modo actual desde el backend al montar
+    useEffect(() => {
+        let cancelado = false;
+        (async () => {
+            try {
+                const res = await fetch(`${API_URL}/facturas/modo`);
+                const json = await res.json();
+                if (!cancelado && json?.modo) {
+                    setModo(json.modo);
+                }
+            } catch {
+                // si falla, nos quedamos con el valor por defecto
+            }
+        })();
+        return () => {
+            cancelado = true;
+        };
+    }, []);
+
+    const cambiarModo = useCallback(async (nuevoModo) => {
+        if (nuevoModo === modoRef.current) return;
+        const anterior = modoRef.current;
+        setModo(nuevoModo);
+        setModoCargando(true);
+        try {
+            const res = await fetch(`${API_URL}/facturas/modo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ modo: nuevoModo }),
+            });
+            if (!res.ok) throw new Error('No se pudo actualizar el modo');
+        } catch (err) {
+            // revertir si falla el guardado
+            setModo(anterior);
+        } finally {
+            setModoCargando(false);
+        }
+    }, []);
+
     const subirArchivos = useCallback(async (fileList) => {
         const files = Array.from(fileList || []).filter((f) =>
             TIPOS_ACEPTADOS.includes(f.type),

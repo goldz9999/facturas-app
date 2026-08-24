@@ -10,14 +10,12 @@ import {
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FacturasService, ModoProcesamiento } from './facturas.service';
-import { TelegramService } from './telegram.service';
 import { ModoService } from './modo.service';
 
 @Controller('facturas')
 export class FacturasController {
   constructor(
     private readonly facturasService: FacturasService,
-    private readonly telegramService: TelegramService,
     private readonly modoService: ModoService,
   ) { }
 
@@ -76,13 +74,8 @@ export class FacturasController {
     return this.facturasService.procesarArchivos(files, modoAUsar);
   }
 
-  // Webhook que reemplaza al "Telegram Trigger1" de n8n. Configúralo con:
-  // https://api.telegram.org/bot<TOKEN>/setWebhook?url=<TU_BACKEND>/facturas/telegram/webhook
-  @Post('telegram/webhook')
-  async telegramWebhook(@Body() update: any) {
-    // Se responde 200 de inmediato; el procesamiento (incluyendo el mensaje
-    // de vuelta al chat) ocurre por fuera para no bloquear a Telegram.
-    this.telegramService.handleUpdate(update).catch(() => undefined);
-    return { ok: true };
-  }
+  // El webhook de Telegram (POST /facturas/telegram/webhook) vive ahora en
+  // TelegramController (src/telegram/telegram.controller.ts) para evitar una
+  // dependencia circular entre FacturasModule y TelegramModule. La URL
+  // pública no cambia: sigue siendo /facturas/telegram/webhook.
 }

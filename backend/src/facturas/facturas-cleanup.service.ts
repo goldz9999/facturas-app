@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { SupabaseService } from './supabase.service';
+import { SupabaseService } from '../common/supabase.service';
 
 const BUCKET = 'Facturas';
 const MESES_RETENCION = 3;

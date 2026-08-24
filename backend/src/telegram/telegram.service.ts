@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { FacturasService, ArchivoEntrada } from './facturas.service';
-import { ModoService } from './modo.service';
+import { FacturasService, ArchivoEntrada } from '../facturas/facturas.service';
+import { ModoService } from '../facturas/modo.service';
 import { UsuariosService } from '../usuarios/usuarios.service';
 
 interface TelegramUpdate {

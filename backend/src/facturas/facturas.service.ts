@@ -1,7 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { SupabaseService } from './supabase.service';
-import { GeminiService } from './gemini.service';
-import { normalizarFactura } from './factura-normalizer';
+import { SupabaseService } from '../common/supabase.service';
+import { GeminiService } from '../ia/gemini.service';
+import { normalizarFactura } from './facturas-normalizer';
 import { ModoProcesamiento } from './modo.service';
 
 const BUCKET = 'Facturas';
