@@ -8,6 +8,7 @@ import {
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
+import { ApiBody } from '@nestjs/swagger';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { FacturasService, ModoProcesamiento } from './facturas.service';
 import { ModoService } from './modo.service';
@@ -27,6 +28,13 @@ export class FacturasController {
     return { modo: await this.modoService.getModo() };
   }
 
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { modo: { type: 'string', enum: ['n8n', 'backend'] } },
+      required: ['modo'],
+    },
+  })
   @Post('modo')
   async setModo(@Body('modo') modo: ModoProcesamiento) {
     if (modo !== 'n8n' && modo !== 'backend') {
