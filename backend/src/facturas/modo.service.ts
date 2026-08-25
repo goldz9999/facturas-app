@@ -8,7 +8,7 @@ const CLAVE = 'modo_procesamiento';
 
 // Modo global usado como fallback en memoria (por si la tabla "configuracion"
 // todavía no existe en Supabase) y para no tener que leer la BD en cada request.
-let modoEnMemoria: ModoProcesamiento = 'n8n';
+let modoEnMemoria: ModoProcesamiento = 'backend';
 let avisoTablaFaltante = false;
 
 // Fuente de verdad única para el modo de procesamiento (n8n vs backend).
