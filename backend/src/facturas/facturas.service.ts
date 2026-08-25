@@ -241,6 +241,60 @@ export class FacturasService {
     };
   }
 
+  // Adjunta un comprobante (foto/PDF) a un gasto YA existente. Usado por el
+  // flujo de botones de Telegram: "¿Tienes comprobante? Sí" o
+  // "/gastos → Agregar comprobante". A diferencia de procesarArchivoIndividual,
+  // acá nunca se crea un gasto nuevo: siempre cuelga del gastoId dado.
+  async adjuntarComprobanteAGasto(gastoId: number, file: ArchivoEntrada) {
+    const mimeType = file.mimetype || 'application/octet-stream';
+    const extMap: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/jpg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+      'application/pdf': 'pdf',
+    };
+    const extPorNombre = file.originalname?.includes('.')
+      ? file.originalname.split('.').pop()
+      : undefined;
+    const ext = extPorNombre || extMap[mimeType] || 'bin';
+    const nombreArchivo = `telegram_${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.${ext}`;
+
+    const { error: uploadError } = await this.supabase
+      .getClient()
+      .storage.from(BUCKET)
+      .upload(nombreArchivo, file.buffer, { contentType: mimeType, upsert: true });
+    if (uploadError) {
+      throw new InternalServerErrorException(`Error subiendo el archivo: ${uploadError.message}`);
+    }
+
+    const texto = await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
+    const datosExtraidos = await this.gemini.extraerFactura(texto, false);
+    const factura = normalizarFactura(datosExtraidos);
+
+    const { comprobante } = await this.gastosService.adjuntarComprobante(
+      gastoId,
+      {
+        tipo: 'factura',
+        numero: factura.n_factura || null,
+        empresa_emisora: factura.empresa || null,
+        subtotal: factura.subtotal,
+        igv: factura.igv,
+        total: factura.total_factura,
+        fecha_documento: factura.fecha,
+      },
+      {
+        tipo: ext === 'pdf' ? 'pdf' : 'imagen',
+        storage_path: nombreArchivo,
+        origen: 'telegram',
+      },
+    );
+
+    return { comprobante, factura };
+  }
+
   // Reenvía cada archivo al Webhook de n8n (multipart/form-data, campo "data").
   // El workflow procesa la imagen/documento (OCR + IA) y guarda la fila en Supabase;
   // el frontend se entera del nuevo registro solo mediante Supabase Realtime.
