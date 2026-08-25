@@ -75,7 +75,7 @@ export class TelegramService {
             const modo = await this.modoService.getModo();
             const resultado =
                 modo === 'backend'
-                    ? await this.facturasService.procesarArchivoIndividual(archivo, usuario.id)
+                    ? await this.facturasService.procesarArchivoIndividual(archivo, usuario.id, 'telegram')
                     : await this.facturasService.reenviarArchivoAN8n(archivo);
 
             await this.enviarMensaje(chatId, this.armarMensaje(resultado));
@@ -157,7 +157,13 @@ export class TelegramService {
             return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
         });
 
-        let msg = '🧾 <b>Factura registrada</b>\n\n';
+        // Si no hay n_factura ni empresa, asumimos que vino de un audio sin
+        // comprobante (no se creó fila en "comprobantes").
+        const tieneComprobante = Boolean(resultado.n_factura || resultado.empresa);
+
+        let msg = tieneComprobante
+            ? '🧾 <b>Factura registrada</b>\n\n'
+            : '💬 <b>Gasto registrado</b> (sin comprobante)\n\n';
         if (resultado.empresa) msg += `🏢 <b>Empresa:</b> ${esc(resultado.empresa)}\n`;
         if (resultado.n_factura) msg += `🔢 <b>N° Factura:</b> ${esc(resultado.n_factura)}\n`;
         if (resultado.fecha) msg += `📅 <b>Fecha:</b> ${esc(resultado.fecha)}\n`;

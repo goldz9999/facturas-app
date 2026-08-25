@@ -1,10 +1,12 @@
 import { Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
+import { ApiQuery } from '@nestjs/swagger';
 import { GastosService } from './gastos.service';
 
 @Controller('gastos')
 export class GastosController {
     constructor(private gastosService: GastosService) { }
 
+    @ApiQuery({ name: 'limite', required: false, type: Number })
     @Get('usuario/:usuarioId/ultimos')
     async ultimosPorUsuario(
         @Param('usuarioId', ParseIntPipe) usuarioId: number,

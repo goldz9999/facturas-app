@@ -138,7 +138,11 @@ export class FacturasService {
   // bot, sin pasar por n8n. usuarioId identifica quién generó el gasto
   // (para Telegram: el usuario autorizado que escribió; para el upload
   // web: el usuario logueado en el frontend).
-  async procesarArchivoIndividual(file: ArchivoEntrada, usuarioId: number) {
+  async procesarArchivoIndividual(
+    file: ArchivoEntrada,
+    usuarioId: number,
+    origen: 'web' | 'telegram' = 'web',
+  ) {
     const mimeType = file.mimetype || 'application/octet-stream';
     const esAudio = mimeType.startsWith('audio/');
     const extMap: Record<string, string> = {
@@ -215,7 +219,7 @@ export class FacturasService {
         : {
           tipo: ext === 'pdf' ? 'pdf' : 'imagen',
           storage_path: nombreArchivo,
-          origen: 'web',
+          origen,
         },
     });
 
