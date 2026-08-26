@@ -106,6 +106,15 @@ export class TelegramService {
                 return;
             }
 
+            // Si llegó un archivo mientras el chat estaba esperando la
+            // corrección de un monto (en vez de responder con texto), esa
+            // pregunta quedó abandonada: se limpia el estado para que no
+            // quede "escuchando" de fondo y confunda una respuesta de texto
+            // posterior con la corrección de un gasto viejo.
+            if (estadoPrevio?.esperando === 'confirmar_monto') {
+                await this.telegramEstado.limpiar(Number(chatId));
+            }
+
             const resultado = await this.facturasService.procesarArchivoIndividual(
                 archivo,
                 usuario.id,
@@ -342,13 +351,27 @@ export class TelegramService {
         if (!chatId) return;
 
         try {
+            const usuario = await this.usuariosService.estaAutorizado(chatId);
+            if (!usuario) return;
+
             if (accion === 'comprobante_no') {
                 await this.enviarMensaje(chatId, '👍 Listo, gasto guardado sin comprobante.');
                 return;
             }
 
+            // Acciones que operan directamente sobre un gasto: se verifica
+            // que el gasto le pertenezca al usuario que apretó el botón,
+            // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
+            // un gasto ajeno mandando un callback_data armado a mano.
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no'];
+            if (accionesSobreGasto.includes(accion)) {
+                if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
+                    await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
+                    return;
+                }
+            }
+
             if (accion === 'comprobante_si' || accion === 'agregar_comprobante') {
-                if (!gastoId) return;
                 await this.telegramEstado.guardar(Number(chatId), 'subir_comprobante', gastoId);
                 await this.enviarMensaje(chatId, '📎 Envíame la foto o el PDF del comprobante.');
                 return;
@@ -363,17 +386,17 @@ export class TelegramService {
                 // La heurística se equivocó: el comprobante (primerIdStr) y su
                 // evidencia (segundoIdStr, puede ser 0) se separan del gasto al
                 // que se habían adjuntado, y pasan a tener su propio gasto.
+                // No hace falta chequeo de dueño acá: buscarCandidatoParaAgrupar
+                // (facturas.service.ts) solo agrupa gastos del mismo usuario,
+                // así que este comprobante ya era del usuario que aprieta el botón.
                 const comprobanteId = gastoId; // reutiliza la misma variable: es el primer id del callback
                 const evidenciaId = Number(segundoIdStr) || null;
-                const usuario = await this.usuariosService.estaAutorizado(chatId);
-                if (!usuario) return;
                 await this.gastosService.separarComprobante(comprobanteId, evidenciaId, usuario.id);
                 await this.enviarMensaje(chatId, '👍 Listo, lo registré como un gasto aparte.');
                 return;
             }
 
             if (accion === 'media_ok') {
-                if (!gastoId) return;
                 await this.gastosService.confirmarConfianza(gastoId);
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
                 await this.preguntarComprobanteSiFalta(chatId, gastoId);
@@ -381,28 +404,26 @@ export class TelegramService {
             }
 
             if (accion === 'media_no') {
-                if (!gastoId) return;
                 await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
                 await this.enviarMensaje(chatId, '✏️ Ok, respóndeme solo el número con el monto correcto, ej: 45.50');
-                return;
-            }
-
-            if (accion === 'dup_no') {
-                if (!gastoId) return;
-                await this.gastosService.descartarDuplicado(gastoId);
-                await this.enviarMensaje(chatId, '👍 Listo, lo dejo como un gasto aparte.');
-                return;
-            }
-
-            if (accion === 'dup_si') {
-                // No se borra nada (nunca automático): queda marcado como
-                // probable duplicado para que el reporte lo pueda filtrar.
-                await this.enviarMensaje(chatId, '👍 Anotado, lo dejo marcado como duplicado.');
                 return;
             }
         } catch (err) {
             this.logger.error(`Error manejando callback de Telegram: ${err.message}`);
             await this.enviarMensaje(chatId, '❌ Hubo un error. Intenta de nuevo.').catch(() => undefined);
+        }
+    }
+
+    // Chequea que el gasto exista y pertenezca al usuario dado. Se usa antes
+    // de ejecutar cualquier acción de callback que actúe sobre un gasto
+    // puntual, para que un callback_data armado a mano con un gasto_id
+    // ajeno no pueda confirmar/corregir/adjuntar nada.
+    private async esDuenoDelGasto(gastoId: number, usuarioId: number): Promise<boolean> {
+        try {
+            const gasto = await this.gastosService.obtenerPorId(gastoId);
+            return gasto.usuario_id === usuarioId;
+        } catch {
+            return false; // gasto inexistente: tampoco es "suyo"
         }
     }
 
