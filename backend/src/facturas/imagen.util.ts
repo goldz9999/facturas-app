@@ -28,10 +28,13 @@ export async function convertirImagenAWebp(
     try {
         const bufferWebp = await sharp(buffer).webp({ quality: CALIDAD_WEBP }).toBuffer();
         return { buffer: bufferWebp, mimetype: 'image/webp', ext: 'webp' };
-    } catch {
+    } catch (err) {
         // Si sharp no puede procesar la imagen (formato raro, archivo
-        // corrupto, etc.), se sube el archivo original en vez de fallar
-        // toda la subida del gasto.
+        // corrupto, binario nativo faltante en el runtime, etc.), se sube
+        // el archivo original en vez de fallar toda la subida del gasto.
+        // Se loguea el motivo real para poder diagnosticarlo — antes se
+        // tragaba el error silenciosamente.
+        console.error(`[convertirImagenAWebp] Falló la conversión, subiendo original: ${err?.message ?? err}`);
         return null;
     }
 }
