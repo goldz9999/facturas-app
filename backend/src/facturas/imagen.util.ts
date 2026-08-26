@@ -1,4 +1,5 @@
-import sharp from 'sharp';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const sharp = require('sharp');
 
 // Calidad de compresión WebP. 80 es un buen balance: reduce bastante el
 // peso del archivo sin degradar la legibilidad de una factura/comprobante.
