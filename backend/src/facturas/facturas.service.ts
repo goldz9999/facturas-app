@@ -4,6 +4,7 @@ import { GeminiService } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
 import { GastosService } from '../gastos/gastos.service';
 import { convertirImagenAWebp } from './imagen.util';
+import { ProveedoresService } from '../proveedores/proveedores.service';
 
 const BUCKET = 'Facturas';
 
@@ -31,6 +32,7 @@ export class FacturasService {
     private supabase: SupabaseService,
     private gemini: GeminiService,
     private gastosService: GastosService,
+    private proveedoresService: ProveedoresService,
   ) { }
 
   async findAll(params: FindFacturasParams) {
@@ -214,6 +216,32 @@ export class FacturasService {
       origen,
     };
 
+    // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
+    //    solo aplica a comprobantes con nombre de empresa detectado, no a
+    //    audio (que normalmente no trae un nombre de proveedor confiable)
+    //    ni cuando el archivo se agrupó con un gasto propio reciente (el
+    //    gasto ya existe y ya tiene su categoría, si la tuvo).
+    let proveedorId: number | null = null;
+    let categoriaId: number | null = null;
+    let esPersonalSugerido: boolean | null = null;
+    let faltaPreguntarCategoria = false;
+
+    if (!esAudio && !candidato && factura.empresa) {
+      const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa);
+      proveedorId = proveedor.id;
+      if (proveedor.categoria_id_sugerida) {
+        // Proveedor ya conocido: se aplica la sugerencia directo, sin
+        // preguntar (aprendizaje progresivo).
+        categoriaId = proveedor.categoria_id_sugerida;
+        esPersonalSugerido = proveedor.es_personal_sugerido;
+      } else {
+        // Proveedor nuevo (o sin sugerencia todavía): Telegram debe
+        // preguntar categoría + tipo de gasto, y guardar la respuesta como
+        // sugerencia para la próxima vez.
+        faltaPreguntarCategoria = true;
+      }
+    }
+
     let gastoId: number;
     let vinculadoA: { gasto_id: number; monto: number; comprobante_id: number; evidencia_id: number | null } | null =
       null;
@@ -251,6 +279,9 @@ export class FacturasService {
         confianza: factura.confianza,
         comprobante: esAudio ? null : datosComprobante,
         evidencia: esAudio ? null : datosEvidencia,
+        categoria_id: categoriaId,
+        proveedor_id: proveedorId,
+        es_personal: esPersonalSugerido ?? undefined,
       });
       gastoId = gasto.id;
 
@@ -291,6 +322,8 @@ export class FacturasService {
       vinculado_a: vinculadoA,
       es_audio: esAudio,
       posible_duplicado: posibleDuplicado,
+      proveedor_id: proveedorId,
+      falta_categoria: faltaPreguntarCategoria,
     };
   }
 

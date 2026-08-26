@@ -4,6 +4,8 @@ import { FacturasService, ArchivoEntrada } from '../facturas/facturas.service';
 import { UsuariosService } from '../usuarios/usuarios.service';
 import { GastosService } from '../gastos/gastos.service';
 import { TelegramEstadoService } from './telegram-estado.service';
+import { CategoriasService } from '../categorias/categorias.service';
+import { ProveedoresService } from '../proveedores/proveedores.service';
 
 interface TelegramUpdate {
     message?: {
@@ -32,6 +34,8 @@ export class TelegramService {
         private usuariosService: UsuariosService,
         private gastosService: GastosService,
         private telegramEstado: TelegramEstadoService,
+        private categoriasService: CategoriasService,
+        private proveedoresService: ProveedoresService,
     ) {
         this.token = this.config.get<string>('TELEGRAM_BOT_TOKEN');
     }
@@ -155,6 +159,16 @@ export class TelegramService {
                 await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
             }
 
+            // Matching de proveedor/categoría (sección 9 de requerimientos):
+            // si el proveedor es nuevo (o todavía no tiene una categoría
+            // aprendida), se pregunta con botones. Se pospone si ya se
+            // preguntó por confianza, para no encimar dos preguntas seguidas
+            // — se retoma cuando esa se resuelva (ver manejarCorreccionMonto
+            // y el callback media_ok).
+            if (!esAudio && !resultado.vinculado_a && resultado.falta_categoria && !pidioConfianza) {
+                await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+            }
+
             // La heurística de agrupación (facturas.service.ts) decidió que
             // este comprobante pertenece a un gasto reciente en vez de crear
             // uno nuevo. Se lo confirmamos al usuario, con opción de decir
@@ -202,6 +216,69 @@ export class TelegramService {
         if (!tieneComprobante) {
             await this.preguntarSiTieneComprobante(chatId, gastoId);
         }
+    }
+
+    // --- Matching de proveedor/categoría (sección 9) ---
+
+    // Manda los botones de categoría + tipo de gasto (Personal/Empresa). El
+    // proveedor viaja en el callback_data junto con el gasto para poder
+    // guardar la sugerencia sin tener que volver a consultar el gasto.
+    private async preguntarCategoria(
+        chatId: number | string,
+        gastoId: number,
+        proveedorId: number | null,
+    ) {
+        if (!proveedorId) return; // sin nombre de empresa detectado, no hay a quién ligar la sugerencia
+        const categorias = await this.categoriasService.listar();
+        if (categorias.length === 0) return;
+
+        const filas: Array<Array<{ text: string; callback_data: string }>> = [];
+        for (let i = 0; i < categorias.length; i += 2) {
+            filas.push(
+                categorias.slice(i, i + 2).map((c) => ({
+                    text: c.nombre,
+                    callback_data: `cat:${gastoId}:${proveedorId}:${c.id}`,
+                })),
+            );
+        }
+        await this.enviarMensaje(chatId, '🏷️ ¿En qué categoría entra este gasto?', {
+            inline_keyboard: filas,
+        });
+    }
+
+    // Se llama después de resolver una confirmación/corrección de confianza,
+    // igual que preguntarComprobanteSiFalta: si el gasto sigue sin
+    // categoría asignada, recién ahí se pregunta.
+    private async preguntarCategoriaSiFalta(chatId: number | string, gastoId: number) {
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        if (!gasto.categoria_id) {
+            await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
+        }
+    }
+
+    // Botón "Personal" / "Empresa" para completar la clasificación después
+    // de elegir categoría. gastoId, proveedorId y categoriaId viajan en el
+    // callback_data para no tener que recordar estado entre pasos.
+    private async preguntarTipoGasto(
+        chatId: number | string,
+        gastoId: number,
+        proveedorId: number,
+        categoriaId: number,
+    ) {
+        await this.enviarMensaje(chatId, '¿Es un gasto personal o de la empresa?', {
+            inline_keyboard: [
+                [
+                    {
+                        text: '🙋 Personal',
+                        callback_data: `tipo:${gastoId}:${proveedorId}:${categoriaId}:personal`,
+                    },
+                    {
+                        text: '🏢 Empresa',
+                        callback_data: `tipo:${gastoId}:${proveedorId}:${categoriaId}:empresa`,
+                    },
+                ],
+            ],
+        });
     }
 
     // --- Heurística de agrupación: confirmación con botones Sí/No ---
@@ -299,6 +376,7 @@ export class TelegramService {
         await this.telegramEstado.limpiar(Number(chatId));
         await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto}.`);
         await this.preguntarComprobanteSiFalta(chatId, gastoId);
+        await this.preguntarCategoriaSiFalta(chatId, gastoId);
     }
 
     // --- Flujo 2: comando /gastos -> lista con botón "Agregar comprobante" ---
@@ -363,7 +441,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -400,12 +478,68 @@ export class TelegramService {
                 await this.gastosService.confirmarConfianza(gastoId);
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
                 await this.preguntarComprobanteSiFalta(chatId, gastoId);
+                await this.preguntarCategoriaSiFalta(chatId, gastoId);
                 return;
             }
 
             if (accion === 'media_no') {
                 await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
                 await this.enviarMensaje(chatId, '✏️ Ok, respóndeme solo el número con el monto correcto, ej: 45.50');
+                return;
+            }
+
+            // Posible duplicado nivel "media" (sección 17): el usuario
+            // resuelve la duda que dejó avisarPosibleDuplicado.
+            if (accion === 'dup_si') {
+                // Confirma que sí era el mismo pago: se deja la marca
+                // posible_duplicado_de tal cual (no se borra nada, para no
+                // perder trazabilidad — el reporte podrá filtrarlo después).
+                await this.enviarMensaje(
+                    chatId,
+                    '🗑️ Anotado, queda marcado como duplicado para el reporte.',
+                );
+                return;
+            }
+
+            if (accion === 'dup_no') {
+                // Era un gasto distinto que coincidió por casualidad: se
+                // limpia la marca y pendiente_revision.
+                await this.gastosService.descartarDuplicado(gastoId);
+                await this.enviarMensaje(chatId, '✅ Listo, quedó como un gasto distinto.');
+                return;
+            }
+
+            // Eligió categoría: falta el tipo de gasto (Personal/Empresa)
+            // antes de guardar nada, así que se pregunta eso a continuación.
+            // proveedorId y categoriaId viajan en el callback_data completo
+            // (data), no en segundoIdStr, porque acá hay más de dos ids.
+            if (accion === 'cat') {
+                const [, , proveedorIdStr, categoriaIdStr] = data.split(':');
+                await this.preguntarTipoGasto(
+                    chatId,
+                    gastoId,
+                    Number(proveedorIdStr),
+                    Number(categoriaIdStr),
+                );
+                return;
+            }
+
+            // Último paso: ya con categoría + tipo de gasto, se actualiza el
+            // gasto y se guarda la sugerencia en el proveedor (aprendizaje
+            // progresivo, sección 9) para que la próxima vez no se pregunte.
+            if (accion === 'tipo') {
+                const [, , proveedorIdStr, categoriaIdStr, tipo] = data.split(':');
+                const proveedorId = Number(proveedorIdStr);
+                const categoriaId = Number(categoriaIdStr);
+                const esPersonal = tipo === 'personal';
+
+                await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal);
+                await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal);
+
+                await this.enviarMensaje(
+                    chatId,
+                    '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.',
+                );
                 return;
             }
         } catch (err) {

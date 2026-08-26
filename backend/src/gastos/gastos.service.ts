@@ -325,6 +325,25 @@ export class GastosService {
     // Marca un gasto como confirmado por el usuario (sube su confianza a
     // 'alta') sin tocar el monto. Usado cuando la extracción con confianza
     // "media" resultó ser correcta y el usuario solo confirma.
+    // Guarda la categoría + tipo de gasto elegidos por el usuario cuando el
+    // proveedor era nuevo (sección 9 de requerimientos: matching de
+    // proveedor/categoría). No toca confianza ni pendiente_revision — son
+    // conceptos independientes (un gasto puede tener confianza alta y
+    // seguir sin categoría, o viceversa).
+    async actualizarCategoria(gastoId: number, categoriaId: number, esPersonal: boolean) {
+        const { data: gasto, error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .update({ categoria_id: categoriaId, es_personal: esPersonal })
+            .eq('id', gastoId)
+            .select('*')
+            .single();
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando la categoría: ${error.message}`);
+        }
+        return gasto;
+    }
+
     async confirmarConfianza(gastoId: number) {
         const { data: gasto, error } = await this.supabase
             .getClient()
