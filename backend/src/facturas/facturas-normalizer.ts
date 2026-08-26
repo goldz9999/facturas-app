@@ -17,6 +17,15 @@ function normalizarFecha(f?: string | null): string {
     return fechaHoyPeru();
 }
 
+export type NivelConfianza = 'alta' | 'media' | 'baja';
+
+const NIVELES_CONFIANZA: NivelConfianza[] = ['alta', 'media', 'baja'];
+
+function normalizarConfianza(c?: string | null): NivelConfianza {
+    const v = String(c ?? '').trim().toLowerCase();
+    return (NIVELES_CONFIANZA as string[]).includes(v) ? (v as NivelConfianza) : 'media';
+}
+
 export interface FacturaNormalizada {
     fecha: string;
     empresa: string;
@@ -24,6 +33,7 @@ export interface FacturaNormalizada {
     subtotal: number | null;
     igv: number | null;
     total_factura: number | null;
+    confianza: NivelConfianza;
     items: Array<{ producto: string; cantidad: number; costo: number }>;
 }
 
@@ -64,6 +74,7 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
         subtotal,
         igv,
         total_factura: totalFactura,
+        confianza: normalizarConfianza(data.Confianza),
         items,
     };
 }

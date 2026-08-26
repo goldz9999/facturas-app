@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FacturasService, ArchivoEntrada } from '../facturas/facturas.service';
-import { ModoService } from '../facturas/modo.service';
 import { UsuariosService } from '../usuarios/usuarios.service';
 import { GastosService } from '../gastos/gastos.service';
 import { TelegramEstadoService } from './telegram-estado.service';
@@ -30,7 +29,6 @@ export class TelegramService {
     constructor(
         private config: ConfigService,
         private facturasService: FacturasService,
-        private modoService: ModoService,
         private usuariosService: UsuariosService,
         private gastosService: GastosService,
         private telegramEstado: TelegramEstadoService,
@@ -74,6 +72,16 @@ export class TelegramService {
                 return;
             }
 
+            // Si el chat está esperando que le confirmen/corrijan el monto de
+            // un gasto de baja confianza, un mensaje de texto se interpreta
+            // como la respuesta a esa pregunta, no como un comando ni un
+            // archivo nuevo.
+            const estadoPrevio = await this.telegramEstado.obtener(Number(chatId));
+            if (estadoPrevio?.esperando === 'confirmar_monto' && estadoPrevio.gasto_id && message.text) {
+                await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text);
+                return;
+            }
+
             // Comando "/gastos" o "gastos": lista los últimos gastos con botón
             // para adjuntar comprobante a cada uno.
             const texto = message.text?.trim().toLowerCase();
@@ -93,32 +101,65 @@ export class TelegramService {
             // chat está esperando que le suban un comprobante para un gasto ya
             // existente (flujo de botones "¿Tienes comprobante? Sí" o
             // "/gastos → Agregar comprobante").
-            const estado = await this.telegramEstado.obtener(Number(chatId));
-            if (estado?.esperando === 'subir_comprobante' && estado.gasto_id) {
-                await this.manejarSubidaDeComprobante(chatId, estado.gasto_id, archivo);
+            if (estadoPrevio?.esperando === 'subir_comprobante' && estadoPrevio.gasto_id) {
+                await this.manejarSubidaDeComprobante(chatId, estadoPrevio.gasto_id, archivo);
                 return;
             }
 
-            // El switch del frontend decide quién procesa: el propio backend o,
-            // si se sigue prefiriendo, se reenvía al webhook genérico de n8n
-            // (en ese caso n8n ya no recibe el update de Telegram directamente,
-            // solo el archivo, así que el mensaje de vuelta al chat lo arma y
-            // envía el backend con la respuesta que da n8n).
-            const modo = await this.modoService.getModo();
-            const resultado =
-                modo === 'backend'
-                    ? await this.facturasService.procesarArchivoIndividual(archivo, usuario.id, 'telegram')
-                    : await this.facturasService.reenviarArchivoAN8n(archivo);
+            const resultado = await this.facturasService.procesarArchivoIndividual(
+                archivo,
+                usuario.id,
+                'telegram',
+            );
 
-            // Si el archivo era un audio (sin comprobante) y estamos en modo
-            // backend, preguntamos si tiene comprobante para adjuntar después.
-            const esAudioSinComprobante =
-                modo === 'backend' && !resultado.n_factura && !resultado.empresa && resultado.gasto_id;
+            // Es audio si el propio pipeline lo marcó como tal, sin importar
+            // si la persona dijo o no una empresa/n° de factura al hablar.
+            const esAudio = Boolean(resultado.es_audio);
 
             await this.enviarMensaje(chatId, this.armarMensaje(resultado));
 
-            if (esAudioSinComprobante) {
+            // Confianza media o baja (sección 23 de requerimientos): en vez
+            // de dar el gasto por bueno sin más, "media" pide confirmación y
+            // "baja" pide directamente el dato correcto. Aplica tanto a
+            // audio como a comprobante — un audio con confianza baja
+            // necesita corrección igual (o más) que una foto mal leída.
+            // No aplica si el comprobante se agrupó con un gasto existente,
+            // porque ese gasto ya pasó (o va a pasar) su propia confirmación
+            // cuando se creó.
+            let pidioConfianza = false;
+            if (!resultado.vinculado_a) {
+                if (resultado.confianza === 'media') {
+                    await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total);
+                    pidioConfianza = true;
+                } else if (resultado.confianza === 'baja') {
+                    await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total);
+                    pidioConfianza = true;
+                }
+            }
+
+            // Si es audio y no quedó pendiente una corrección de monto (que
+            // ya te va a hacer escribir igual), preguntamos si tiene
+            // comprobante para adjuntar después. Si ya le pedimos corregir
+            // el monto, evitamos bombardear con dos preguntas seguidas: se
+            // pregunta por el comprobante recién cuando responda esa.
+            if (esAudio && !pidioConfianza) {
                 await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+            }
+
+            // La heurística de agrupación (facturas.service.ts) decidió que
+            // este comprobante pertenece a un gasto reciente en vez de crear
+            // uno nuevo. Se lo confirmamos al usuario, con opción de decir
+            // que no era así.
+            if (resultado.vinculado_a) {
+                await this.confirmarAgrupacion(chatId, resultado.vinculado_a);
+            }
+
+            // Posible duplicado entre usuarios distintos (sección 17): si el
+            // parecido es "seguro" (mismo monto+fecha+número de comprobante),
+            // solo se avisa. Si es "parcial" (solo monto+fecha), se pregunta
+            // antes de dar el gasto por bueno — nunca se borra automático.
+            if (resultado.posible_duplicado) {
+                await this.avisarPosibleDuplicado(chatId, resultado.gasto_id, resultado.posible_duplicado);
             }
         } catch (err) {
             this.logger.error(`Error procesando update de Telegram: ${err.message}`);
@@ -140,6 +181,115 @@ export class TelegramService {
                 ],
             ],
         });
+    }
+
+    // Se llama después de resolver una confirmación/corrección de confianza.
+    // Si el gasto sigue sin comprobante (típico de audio), recién ahí le
+    // preguntamos si tiene uno para adjuntar — evita mandar la pregunta de
+    // comprobante y la de confianza al mismo tiempo.
+    private async preguntarComprobanteSiFalta(chatId: number | string, gastoId: number) {
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        const tieneComprobante = Array.isArray(gasto.comprobantes) && gasto.comprobantes.length > 0;
+        if (!tieneComprobante) {
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+        }
+    }
+
+    // --- Heurística de agrupación: confirmación con botones Sí/No ---
+
+    private async confirmarAgrupacion(
+        chatId: number | string,
+        vinculadoA: { gasto_id: number; monto: number; comprobante_id: number; evidencia_id: number | null },
+    ) {
+        const evid = vinculadoA.evidencia_id ?? 0;
+        await this.enviarMensaje(
+            chatId,
+            `🔗 Vinculé este comprobante al gasto de S/ ${vinculadoA.monto} que registraste hace poco. ¿Es correcto?`,
+            {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '✅ Sí, es correcto',
+                            callback_data: `agrupar_si:${vinculadoA.comprobante_id}:${evid}`,
+                        },
+                        {
+                            text: '❌ No, es otro gasto',
+                            callback_data: `agrupar_no:${vinculadoA.comprobante_id}:${evid}`,
+                        },
+                    ],
+                ],
+            },
+        );
+    }
+
+    // --- Duplicados entre usuarios distintos ---
+
+    private async avisarPosibleDuplicado(
+        chatId: number | string,
+        gastoId: number,
+        duplicado: { usuario_nombre: string; nivel: 'alta' | 'media' },
+    ) {
+        if (duplicado.nivel === 'alta') {
+            await this.enviarMensaje(
+                chatId,
+                `⚠️ Este pago ya fue registrado por <b>${duplicado.usuario_nombre}</b>.`,
+            );
+            return;
+        }
+
+        await this.enviarMensaje(
+            chatId,
+            `🔁 Posible gasto duplicado: encontré uno con el mismo monto y fecha registrado por <b>${duplicado.usuario_nombre}</b>. ¿Deseas registrarlo igualmente?`,
+            {
+                inline_keyboard: [
+                    [
+                        { text: '✅ Sí, es distinto', callback_data: `dup_no:${gastoId}` },
+                        { text: '🗑️ No, era el mismo', callback_data: `dup_si:${gastoId}` },
+                    ],
+                ],
+            },
+        );
+    }
+
+    // --- Confianza media/baja: confirmación o corrección de monto ---
+
+    private async confirmarConfianzaMedia(chatId: number | string, gastoId: number, montoDetectado: number) {
+        await this.enviarMensaje(
+            chatId,
+            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${montoDetectado}). ¿Está correcto?`,
+            {
+                inline_keyboard: [
+                    [
+                        { text: '✅ Sí, está bien', callback_data: `media_ok:${gastoId}` },
+                        { text: '✏️ Corregir monto', callback_data: `media_no:${gastoId}` },
+                    ],
+                ],
+            },
+        );
+    }
+
+    private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number) {
+        await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
+        await this.enviarMensaje(
+            chatId,
+            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${montoDetectado}, puede estar mal). ` +
+            `¿Cuál es el monto correcto? Respóndeme solo el número, ej: 45.50`,
+        );
+    }
+
+    private async manejarCorreccionMonto(chatId: number | string, gastoId: number, texto: string) {
+        const normalizado = texto.trim().replace(',', '.').replace(/[^\d.]/g, '');
+        const monto = normalizado ? parseFloat(normalizado) : NaN;
+
+        if (!normalizado || isNaN(monto) || monto <= 0) {
+            await this.enviarMensaje(chatId, '❌ No entendí el monto. Respóndeme solo el número, ej: 45.50');
+            return; // el estado sigue activo, para que pueda reintentar
+        }
+
+        await this.gastosService.corregirMonto(gastoId, monto);
+        await this.telegramEstado.limpiar(Number(chatId));
+        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto}.`);
+        await this.preguntarComprobanteSiFalta(chatId, gastoId);
     }
 
     // --- Flujo 2: comando /gastos -> lista con botón "Agregar comprobante" ---
@@ -182,14 +332,14 @@ export class TelegramService {
     private async manejarCallbackQuery(callback: NonNullable<TelegramUpdate['callback_query']>) {
         const chatId = callback.message?.chat.id;
         const data = callback.data || '';
-        const [accion, gastoIdStr] = data.split(':');
-        const gastoId = Number(gastoIdStr);
+        const [accion, primerIdStr, segundoIdStr] = data.split(':');
+        const gastoId = Number(primerIdStr);
 
         // Responder el callback siempre, para que el botón deje de "cargar" en
         // la app de Telegram, incluso si algo falla después.
         await this.responderCallback(callback.id);
 
-        if (!chatId || !gastoId) return;
+        if (!chatId) return;
 
         try {
             if (accion === 'comprobante_no') {
@@ -198,8 +348,56 @@ export class TelegramService {
             }
 
             if (accion === 'comprobante_si' || accion === 'agregar_comprobante') {
+                if (!gastoId) return;
                 await this.telegramEstado.guardar(Number(chatId), 'subir_comprobante', gastoId);
                 await this.enviarMensaje(chatId, '📎 Envíame la foto o el PDF del comprobante.');
+                return;
+            }
+
+            if (accion === 'agrupar_si') {
+                await this.enviarMensaje(chatId, '👍 Perfecto, quedó todo junto en el mismo gasto.');
+                return;
+            }
+
+            if (accion === 'agrupar_no') {
+                // La heurística se equivocó: el comprobante (primerIdStr) y su
+                // evidencia (segundoIdStr, puede ser 0) se separan del gasto al
+                // que se habían adjuntado, y pasan a tener su propio gasto.
+                const comprobanteId = gastoId; // reutiliza la misma variable: es el primer id del callback
+                const evidenciaId = Number(segundoIdStr) || null;
+                const usuario = await this.usuariosService.estaAutorizado(chatId);
+                if (!usuario) return;
+                await this.gastosService.separarComprobante(comprobanteId, evidenciaId, usuario.id);
+                await this.enviarMensaje(chatId, '👍 Listo, lo registré como un gasto aparte.');
+                return;
+            }
+
+            if (accion === 'media_ok') {
+                if (!gastoId) return;
+                await this.gastosService.confirmarConfianza(gastoId);
+                await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
+                await this.preguntarComprobanteSiFalta(chatId, gastoId);
+                return;
+            }
+
+            if (accion === 'media_no') {
+                if (!gastoId) return;
+                await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
+                await this.enviarMensaje(chatId, '✏️ Ok, respóndeme solo el número con el monto correcto, ej: 45.50');
+                return;
+            }
+
+            if (accion === 'dup_no') {
+                if (!gastoId) return;
+                await this.gastosService.descartarDuplicado(gastoId);
+                await this.enviarMensaje(chatId, '👍 Listo, lo dejo como un gasto aparte.');
+                return;
+            }
+
+            if (accion === 'dup_si') {
+                // No se borra nada (nunca automático): queda marcado como
+                // probable duplicado para que el reporte lo pueda filtrar.
+                await this.enviarMensaje(chatId, '👍 Anotado, lo dejo marcado como duplicado.');
                 return;
             }
         } catch (err) {

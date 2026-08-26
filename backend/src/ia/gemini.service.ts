@@ -12,8 +12,14 @@ const JSON_SCHEMA = `{
   ],
   "SubTotal": "number|null",
   "IGV": "number|null",
-  "Total": "number|null"
+  "Total": "number|null",
+  "Confianza": "\"alta\" | \"media\" | \"baja\""
 }`;
+
+const REGLAS_CONFIANZA = `Reglas para "Confianza" (qué tan seguro estás de la extracción):
+- "alta": el monto Total es claro y no ambiguo, y al menos la Empresa o la Fecha también son claras. No hubo que adivinar ni inferir nada importante.
+- "media": el Total es claro, pero falta o es ambigua Empresa, Fecha, o el desglose de articulos; o tuviste que inferir/calcular algún dato en vez de leerlo directamente.
+- "baja": el Total es dudoso, ilegible, contradictorio, o tuviste que inventarlo/estimarlo; o la imagen/audio es de mala calidad y no estás seguro de casi nada.`;
 
 // Prompt para texto que viene de una FACTURA/RECIBO tabular (foto, PDF, doc).
 const SYSTEM_PROMPT_EXTRACCION_FACTURA = `Eres un asistente experto en extraer toda la informacion relevante de facturas o recibos de compra ya transcritos.
@@ -39,6 +45,8 @@ Reglas para SubTotal, IGV y Total:
 Otras reglas:
 - "Empresa" es el nombre de la empresa que emite la factura. Si no aparece, deja el campo como cadena vacia "".
 - "NumeroFactura" es el numero o identificador de la factura. Si no aparece, deja "".
+
+${REGLAS_CONFIANZA}
 
 Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un objeto JSON valido, sin texto adicional, sin markdown, que cumpla este schema:
 
@@ -69,6 +77,9 @@ Otras reglas:
 - "NumeroFactura" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de comprobante.
 - "Fecha": si la persona menciona cuándo fue el gasto (ej. "ayer", "el lunes"), intenta inferir la fecha; si no dice nada, deja el campo vacio.
 
+${REGLAS_CONFIANZA}
+En un audio es normal que la confianza rara vez sea "alta" (el usuario habla de forma aproximada): úsala solo si dio un monto y un articulo claros y sin ambigüedad.
+
 Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un objeto JSON valido, sin texto adicional, sin markdown, que cumpla este schema:
 
 ${JSON_SCHEMA}`;
@@ -86,6 +97,7 @@ export interface FacturaExtraida {
     SubTotal?: number | null;
     IGV?: number | null;
     Total?: number | null;
+    Confianza?: string;
 }
 
 @Injectable()

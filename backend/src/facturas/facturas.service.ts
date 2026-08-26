@@ -2,12 +2,10 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { GeminiService } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
-import { ModoProcesamiento } from './modo.service';
 import { GastosService } from '../gastos/gastos.service';
+import { convertirImagenAWebp } from './imagen.util';
 
 const BUCKET = 'Facturas';
-
-export { ModoProcesamiento };
 
 // Forma mínima que necesitamos de un archivo, para poder reusar el mismo
 // pipeline tanto con archivos de Multer (upload web) como con archivos
@@ -87,24 +85,11 @@ export class FacturasService {
       total: count ?? 0,
     };
   }
-  // Punto de entrada único: según "modo" reenvía a n8n (legado) o procesa
-  // el archivo directamente en el backend (Gemini + Supabase), sin n8n.
-  // usuarioId es obligatorio en modo 'backend': todo gasto queda vinculado
-  // al usuario que lo subió (RF de trazabilidad).
-  async procesarArchivos(
-    files: Array<Express.Multer.File>,
-    modo: ModoProcesamiento = 'n8n',
-    usuarioId?: number,
-  ) {
-    if (modo === 'backend') {
-      if (!usuarioId) {
-        throw new InternalServerErrorException(
-          'usuario_id es obligatorio para procesar en modo backend.',
-        );
-      }
-      return this.procesarArchivosEnBackend(files, usuarioId);
-    }
-    return this.procesarArchivosConN8n(files);
+  // Punto de entrada único: procesa el archivo directamente en el backend
+  // (Gemini + Supabase). usuarioId es obligatorio: todo gasto queda
+  // vinculado al usuario que lo subió (RF de trazabilidad).
+  async procesarArchivos(files: Array<Express.Multer.File>, usuarioId: number) {
+    return this.procesarArchivosEnBackend(files, usuarioId);
   }
 
   // Reemplaza todo el workflow de n8n: sube la imagen a Supabase Storage,
@@ -163,13 +148,25 @@ export class FacturasService {
       .toString(36)
       .slice(2, 8)}.${ext}`;
 
-    // 1. Subir el archivo original a Supabase Storage (igual que "Guardar Imagen1")
+    // 1. Subir el archivo original a Supabase Storage (igual que "Guardar Imagen1").
+    //    Si es una imagen (no PDF/doc), se convierte a WebP antes de subir
+    //    para ahorrar espacio en el bucket; el buffer original (sin
+    //    convertir) se sigue usando para Gemini más abajo, no se pierde
+    //    calidad para la extracción.
+    let nombreArchivoFinal = nombreArchivo;
     if (!esAudio) {
+      const convertida = await convertirImagenAWebp(file.buffer, mimeType);
+      const bufferASubir = convertida?.buffer ?? file.buffer;
+      const mimeASubir = convertida?.mimetype ?? mimeType;
+      if (convertida) {
+        nombreArchivoFinal = `web_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
+      }
+
       const { error: uploadError } = await this.supabase
         .getClient()
         .storage.from(BUCKET)
-        .upload(nombreArchivo, file.buffer, {
-          contentType: mimeType,
+        .upload(nombreArchivoFinal, bufferASubir, {
+          contentType: mimeASubir,
           upsert: true,
         });
       if (uploadError) {
@@ -190,54 +187,110 @@ export class FacturasService {
     // 4. Normalizar (fecha, items) igual que "Separar articulos1"
     const factura = normalizarFactura(datosExtraidos);
 
-    // 5. Guardar el gasto en el esquema nuevo (gastos + comprobante +
-    //    evidencia). Si es audio, no hay comprobante (puede no haber
-    //    factura física) ni evidencia (el audio no se sube a Storage).
-    //    NOTA: los items línea por línea (factura.items) no tienen tabla
-    //    propia todavía en el esquema nuevo; se devuelven en la respuesta
-    //    para el mensaje de Telegram, pero no se persisten aparte. Si se
-    //    necesita el detalle guardado, se puede sumar una tabla
-    //    `comprobante_items` sin tocar esta función.
-    const { gasto } = await this.gastosService.crear({
-      usuario_id: usuarioId,
-      descripcion: factura.empresa || null,
-      monto: factura.total_factura || 0,
-      fecha: factura.fecha,
-      comprobante: esAudio
-        ? null
-        : {
-          tipo: 'factura',
-          numero: factura.n_factura || null,
-          empresa_emisora: factura.empresa || null,
-          subtotal: factura.subtotal,
-          igv: factura.igv,
-          total: factura.total_factura,
-          fecha_documento: factura.fecha,
-        },
-      evidencia: esAudio
-        ? null
-        : {
-          tipo: ext === 'pdf' ? 'pdf' : 'imagen',
-          storage_path: nombreArchivo,
-          origen,
-        },
-    });
+    // 5. Heurística de agrupación de evidencias (solo para comprobantes, no
+    //    para audio): si el mismo usuario tiene un gasto reciente con el
+    //    mismo monto (ej. acaba de mandar la factura y ahora manda el Yape,
+    //    o al revés), asumimos que es el mismo gasto y le adjuntamos el
+    //    comprobante + evidencia en vez de crear un gasto nuevo. Ver
+    //    diagnóstico técnico, sección 3.
+    const montoDetectado = factura.total_factura || 0;
+    const candidato =
+      !esAudio && montoDetectado > 0
+        ? await this.gastosService.buscarCandidatoParaAgrupar(usuarioId, montoDetectado)
+        : null;
+
+    const datosComprobante = {
+      tipo: 'factura' as const,
+      numero: factura.n_factura || null,
+      empresa_emisora: factura.empresa || null,
+      subtotal: factura.subtotal,
+      igv: factura.igv,
+      total: factura.total_factura,
+      fecha_documento: factura.fecha,
+    };
+    const datosEvidencia = {
+      tipo: ext === 'pdf' ? 'pdf' : ('imagen' as const),
+      storage_path: nombreArchivoFinal,
+      origen,
+    };
+
+    let gastoId: number;
+    let vinculadoA: { gasto_id: number; monto: number; comprobante_id: number; evidencia_id: number | null } | null =
+      null;
+    let posibleDuplicado: { usuario_nombre: string; nivel: 'alta' | 'media' } | null = null;
+
+    if (candidato) {
+      // No crea un gasto nuevo: cuelga el comprobante y la evidencia del
+      // gasto encontrado por la heurística.
+      const { comprobante, evidencia } = await this.gastosService.adjuntarComprobante(
+        candidato.id,
+        datosComprobante,
+        esAudio ? null : datosEvidencia,
+      );
+      gastoId = candidato.id;
+      vinculadoA = {
+        gasto_id: candidato.id,
+        monto: candidato.monto,
+        comprobante_id: comprobante.id,
+        evidencia_id: evidencia?.id ?? null,
+      };
+    } else {
+      // 5b. Guardar el gasto en el esquema nuevo (gastos + comprobante +
+      //    evidencia). Si es audio, no hay comprobante (puede no haber
+      //    factura física) ni evidencia (el audio no se sube a Storage).
+      //    NOTA: los items línea por línea (factura.items) no tienen tabla
+      //    propia todavía en el esquema nuevo; se devuelven en la respuesta
+      //    para el mensaje de Telegram, pero no se persisten aparte. Si se
+      //    necesita el detalle guardado, se puede sumar una tabla
+      //    `comprobante_items` sin tocar esta función.
+      const { gasto } = await this.gastosService.crear({
+        usuario_id: usuarioId,
+        descripcion: factura.empresa || null,
+        monto: montoDetectado,
+        fecha: factura.fecha,
+        confianza: factura.confianza,
+        comprobante: esAudio ? null : datosComprobante,
+        evidencia: esAudio ? null : datosEvidencia,
+      });
+      gastoId = gasto.id;
+
+      // Detección de duplicados entre usuarios distintos (sección 17): solo
+      // tiene sentido para comprobantes (mismo caso del ejemplo, Yape/foto),
+      // no para audio, que no tiene monto confiable para comparar.
+      if (!esAudio && montoDetectado > 0) {
+        const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
+          usuarioId,
+          montoDetectado,
+          factura.fecha,
+          datosComprobante.numero,
+        );
+        if (duplicado) {
+          await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
+          posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+        }
+      }
+    }
 
     // 6. Respuesta con una forma compatible con la que devolvía el webhook
     //    de n8n (empresa, n_factura, fecha, subtotal, igv, total, items),
     //    más el id del gasto nuevo (útil para armar el mensaje de Telegram
-    //    y para el flujo de "adjuntar comprobante después").
+    //    y para el flujo de "adjuntar comprobante después"), más info de
+    //    agrupación si aplicó la heurística (para que Telegram confirme).
     return {
       success: true,
       mensaje: 'Gasto registrado correctamente',
-      gasto_id: gasto.id,
+      gasto_id: gastoId,
       empresa: factura.empresa,
       n_factura: factura.n_factura,
       fecha: factura.fecha,
       subtotal: factura.subtotal,
       igv: factura.igv,
       total: factura.total_factura || 0,
+      confianza: factura.confianza,
       items: factura.items,
+      vinculado_a: vinculadoA,
+      es_audio: esAudio,
+      posible_duplicado: posibleDuplicado,
     };
   }
 
@@ -262,10 +315,20 @@ export class FacturasService {
       .toString(36)
       .slice(2, 8)}.${ext}`;
 
+    // Igual que en procesarArchivoIndividual: si es imagen, se convierte a
+    // WebP antes de subir (ahorro de espacio); Gemini sigue leyendo el
+    // buffer original más abajo.
+    const convertida = await convertirImagenAWebp(file.buffer, mimeType);
+    const bufferASubir = convertida?.buffer ?? file.buffer;
+    const mimeASubir = convertida?.mimetype ?? mimeType;
+    const nombreArchivoFinal = convertida
+      ? `telegram_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`
+      : nombreArchivo;
+
     const { error: uploadError } = await this.supabase
       .getClient()
       .storage.from(BUCKET)
-      .upload(nombreArchivo, file.buffer, { contentType: mimeType, upsert: true });
+      .upload(nombreArchivoFinal, bufferASubir, { contentType: mimeASubir, upsert: true });
     if (uploadError) {
       throw new InternalServerErrorException(`Error subiendo el archivo: ${uploadError.message}`);
     }
@@ -287,7 +350,7 @@ export class FacturasService {
       },
       {
         tipo: ext === 'pdf' ? 'pdf' : 'imagen',
-        storage_path: nombreArchivo,
+        storage_path: nombreArchivoFinal,
         origen: 'telegram',
       },
     );
@@ -295,58 +358,4 @@ export class FacturasService {
     return { comprobante, factura };
   }
 
-  // Reenvía cada archivo al Webhook de n8n (multipart/form-data, campo "data").
-  // El workflow procesa la imagen/documento (OCR + IA) y guarda la fila en Supabase;
-  // el frontend se entera del nuevo registro solo mediante Supabase Realtime.
-  private async procesarArchivosConN8n(files: Array<Express.Multer.File>) {
-    const resultados = await Promise.all(
-      files.map(async (file) => {
-        try {
-          const resultado = await this.reenviarArchivoAN8n(file);
-          return { archivo: file.originalname, ok: true, resultado };
-        } catch (err) {
-          return {
-            archivo: file.originalname,
-            ok: false,
-            error: err.message || 'Error desconocido al enviar a n8n',
-          };
-        }
-      }),
-    );
-
-    return { resultados };
-  }
-
-  // Reenvía UN archivo al webhook genérico de n8n y devuelve su respuesta ya
-  // parseada. Público porque también lo usa TelegramService cuando el modo
-  // global está en "n8n" (así el bot sigue usando n8n si así se elige,
-  // aunque ya no reciba updates directamente de Telegram).
-  async reenviarArchivoAN8n(file: ArchivoEntrada): Promise<any> {
-    const webhookUrl = process.env.N8N_WEBHOOK_URL;
-    if (!webhookUrl) {
-      throw new InternalServerErrorException(
-        'Falta configurar N8N_WEBHOOK_URL en las variables de entorno.',
-      );
-    }
-
-    const bytes = new Uint8Array(file.buffer);
-    const blob = new Blob([bytes], {
-      type: file.mimetype || 'application/octet-stream',
-    });
-    const formData = new FormData();
-    formData.append('data', blob, file.originalname);
-
-    const res = await fetch(webhookUrl, { method: 'POST', body: formData });
-
-    const contentType = res.headers.get('content-type') || '';
-    const body = contentType.includes('application/json')
-      ? await res.json()
-      : await res.text();
-
-    if (!res.ok) {
-      throw new Error(typeof body === 'string' ? body : JSON.stringify(body));
-    }
-
-    return body;
-  }
 }
