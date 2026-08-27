@@ -17,6 +17,15 @@ function normalizarFecha(f?: string | null): string {
     return fechaHoyPeru();
 }
 
+function normalizarRuc(r?: string | null): string {
+    if (!r) return '';
+    // Solo dígitos; el RUC peruano tiene 11 dígitos. Si no calza con eso,
+    // se descarta en vez de guardar basura (Gemini a veces mezcla el RUC
+    // con otro número cercano en la factura).
+    const soloDigitos = String(r).replace(/\D/g, '');
+    return soloDigitos.length === 11 ? soloDigitos : '';
+}
+
 export type NivelConfianza = 'alta' | 'media' | 'baja';
 
 const NIVELES_CONFIANZA: NivelConfianza[] = ['alta', 'media', 'baja'];
@@ -29,6 +38,7 @@ function normalizarConfianza(c?: string | null): NivelConfianza {
 export interface FacturaNormalizada {
     fecha: string;
     empresa: string;
+    ruc: string;
     n_factura: string;
     subtotal: number | null;
     igv: number | null;
@@ -41,6 +51,7 @@ export interface FacturaNormalizada {
 export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
     const fecha = normalizarFecha(data.Fecha);
     const empresa = data.Empresa != null ? data.Empresa : '';
+    const ruc = normalizarRuc(data.RUC);
     const numero = data.NumeroFactura != null ? data.NumeroFactura : '';
     const articulos = Array.isArray(data.Articulos) ? data.Articulos : [];
     const subtotal = data.SubTotal != null ? data.SubTotal : null;
@@ -70,6 +81,7 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
     return {
         fecha,
         empresa,
+        ruc,
         n_factura: numero,
         subtotal,
         igv,

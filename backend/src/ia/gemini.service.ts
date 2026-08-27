@@ -1,11 +1,12 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-const PROMPT_TRANSCRIBIR = `Transcribe TODO el texto visible en esta imagen o documento de factura/recibo, exactamente como aparece: fecha, nombre de la empresa, numero de factura, cada articulo o servicio con su cantidad, precio unitario e importe, y el total. Si es una tabla, transcribela renglon por renglon en el mismo orden. No resumas, no interpretes, no calcules nada: solo transcribe el contenido legible, en espanol.`;
+const PROMPT_TRANSCRIBIR = `Transcribe TODO el texto visible en esta imagen o documento de factura/recibo, exactamente como aparece: fecha, nombre de la empresa, RUC (numero de 11 digitos que suele aparecer junto al nombre de la empresa emisora), numero de factura, cada articulo o servicio con su cantidad, precio unitario e importe, y el total. Si es una tabla, transcribela renglon por renglon en el mismo orden. No resumas, no interpretes, no calcules nada: solo transcribe el contenido legible, en espanol.`;
 
 const JSON_SCHEMA = `{
   "Fecha": "string (YYYY-MM-DD o DD/MM/YYYY)",
   "Empresa": "string",
+  "RUC": "string",
   "NumeroFactura": "string",
   "Articulos": [
     { "Descripcion": "string", "Cantidad": "number|null", "PrecioUnitario": "number|null", "Importe": "number|null" }
@@ -44,6 +45,7 @@ Reglas para SubTotal, IGV y Total:
 
 Otras reglas:
 - "Empresa" es el nombre de la empresa que emite la factura. Si no aparece, deja el campo como cadena vacia "".
+- "RUC" es el numero de RUC de la empresa emisora (11 digitos en Peru, suele aparecer junto o debajo del nombre de la empresa, a veces precedido por "RUC:"). Si no aparece o no es legible, deja el campo como cadena vacia "".
 - "NumeroFactura" es el numero o identificador de la factura. Si no aparece, deja "".
 
 ${REGLAS_CONFIANZA}
@@ -74,6 +76,7 @@ Reglas para SubTotal, IGV y Total:
 
 Otras reglas:
 - "Empresa" es el nombre del negocio o proveedor si la persona lo menciona (ej. "en el grifo Primax", "en la ferreteria de la esquina"). Si no lo menciona, deja "".
+- "RUC" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de RUC.
 - "NumeroFactura" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de comprobante.
 - "Fecha": si la persona menciona cuándo fue el gasto (ej. "ayer", "el lunes"), intenta inferir la fecha; si no dice nada, deja el campo vacio.
 
@@ -87,6 +90,7 @@ ${JSON_SCHEMA}`;
 export interface FacturaExtraida {
     Fecha?: string;
     Empresa?: string;
+    RUC?: string;
     NumeroFactura?: string;
     Articulos?: Array<{
         Descripcion?: string;

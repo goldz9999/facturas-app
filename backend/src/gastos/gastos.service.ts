@@ -250,15 +250,17 @@ export class GastosService {
     // Detección de duplicados entre USUARIOS DISTINTOS (sección 17 de
     // requerimientos: caso "Wilber le manda la captura a su esposa y ella
     // también la sube"). Compara mismo monto + misma fecha contra gastos de
-    // otros usuarios. Señales que hoy no se extraen (RUC, n° de operación de
-    // Yape, similitud de imagen) quedan fuera hasta que existan esos campos;
-    // por eso el nivel más alto que podemos declarar es "alta" solo cuando
-    // además coincide el número de comprobante/factura.
+    // otros usuarios. El nivel "alta" se declara cuando además coincide el
+    // número de comprobante/factura, o el mismo proveedor (por RUC, cuando
+    // se pudo extraer) — ambas son señales fuertes de que es el mismo pago.
+    // Número de operación de Yape y similitud de imagen quedan fuera hasta
+    // que existan esos campos.
     async buscarPosibleDuplicadoEntreUsuarios(
         usuarioId: number,
         monto: number,
         fecha: string,
         numeroComprobante?: string | null,
+        proveedorId?: number | null,
     ) {
         const tolerancia = 0.5; // soles
 
@@ -287,10 +289,17 @@ export class GastosService {
             Array.isArray(candidato.comprobantes) &&
             candidato.comprobantes.some((c: any) => c.numero && c.numero === numeroComprobante);
 
+        // Mismo proveedor (identificado por RUC vía buscarOCrear, ver
+        // ProveedoresService) es otra señal fuerte: si Wilber y su esposa
+        // suben la misma foto de la misma ferretería el mismo día por el
+        // mismo monto, es altamente probable que sea el mismo pago aunque
+        // no se haya podido leer el número de comprobante.
+        const coincideProveedor = !!proveedorId && candidato.proveedor_id === proveedorId;
+
         return {
             gasto: candidato,
             usuario_nombre: candidato.usuarios?.nombre ?? 'otro usuario',
-            nivel: coincideNumero ? ('alta' as const) : ('media' as const),
+            nivel: coincideNumero || coincideProveedor ? ('alta' as const) : ('media' as const),
         };
     }
 

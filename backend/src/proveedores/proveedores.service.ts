@@ -4,6 +4,7 @@ import { SupabaseService } from '../common/supabase.service';
 export interface Proveedor {
     id: number;
     nombre: string;
+    ruc: string | null;
     categoria_id_sugerida: number | null;
     es_personal_sugerido: boolean | null;
 }
@@ -23,18 +24,42 @@ export interface Proveedor {
 export class ProveedoresService {
     constructor(private supabase: SupabaseService) { }
 
-    // Busca un proveedor por nombre (normalizado) o lo crea si no existe.
-    // Normalización simple: trim + minúsculas, para que "Textiles Pérez" y
-    // "textiles pérez " no generen dos filas distintas. No se intenta un
-    // match difuso (fuzzy) todavía — si hace falta más adelante (variantes
-    // con errores de tipeo, RUC, etc.), se puede sumar sin romper esta firma.
-    async buscarOCrear(nombreCrudo: string): Promise<Proveedor> {
+    // Busca un proveedor por RUC (si viene y es confiable) o por nombre
+    // normalizado, o lo crea si no existe. El RUC es preferible porque es un
+    // identificador exacto: evita que "Textiles Pérez S.A.C." y "TEXTILES
+    // PEREZ SAC" (mismo RUC, texto distinto) generen dos filas separadas.
+    // Si el RUC no vino en esta factura (frecuente: no siempre es legible),
+    // se cae al match por nombre como hasta ahora.
+    async buscarOCrear(nombreCrudo: string, ruc?: string | null): Promise<Proveedor> {
         const client = this.supabase.getClient();
         const nombreNormalizado = nombreCrudo.trim();
+        const rucNormalizado = ruc?.trim() || null;
+        const columnas = 'id, nombre, ruc, categoria_id_sugerida, es_personal_sugerido';
+
+        if (rucNormalizado) {
+            const { data: porRuc, error: errorPorRuc } = await client
+                .from('proveedores')
+                .select(columnas)
+                .eq('ruc', rucNormalizado)
+                .maybeSingle();
+
+            if (errorPorRuc) {
+                throw new InternalServerErrorException(
+                    `Error buscando proveedor por RUC: ${errorPorRuc.message}`,
+                );
+            }
+            if (porRuc) {
+                // Ya existía con este RUC. Si antes se había creado sin RUC
+                // (match por nombre) esto no debería pasar porque acabamos
+                // de buscar por RUC exacto, así que no hace falta actualizar
+                // nada más aquí.
+                return porRuc as any;
+            }
+        }
 
         const { data: existente, error: errorBusqueda } = await client
             .from('proveedores')
-            .select('id, nombre, categoria_id_sugerida, es_personal_sugerido')
+            .select(columnas)
             .ilike('nombre', nombreNormalizado)
             .maybeSingle();
 
@@ -43,12 +68,30 @@ export class ProveedoresService {
                 `Error buscando proveedor: ${errorBusqueda.message}`,
             );
         }
-        if (existente) return existente;
+        if (existente) {
+            // Proveedor ya existía por nombre pero todavía no tenía RUC
+            // guardado (ej. se creó una vez con una foto donde no se leía) y
+            // esta vez sí lo pudimos leer: lo completamos para que la
+            // próxima búsqueda ya pueda usar el match exacto por RUC.
+            if (rucNormalizado && !(existente as any).ruc) {
+                const { error: errorUpdate } = await client
+                    .from('proveedores')
+                    .update({ ruc: rucNormalizado })
+                    .eq('id', (existente as any).id);
+                if (errorUpdate) {
+                    throw new InternalServerErrorException(
+                        `Error completando RUC de proveedor: ${errorUpdate.message}`,
+                    );
+                }
+                return { ...(existente as any), ruc: rucNormalizado };
+            }
+            return existente as any;
+        }
 
         const { data: creado, error: errorCreacion } = await client
             .from('proveedores')
-            .insert({ nombre: nombreNormalizado })
-            .select('id, nombre, categoria_id_sugerida, es_personal_sugerido')
+            .insert({ nombre: nombreNormalizado, ruc: rucNormalizado })
+            .select(columnas)
             .single();
 
         if (errorCreacion) {
@@ -56,7 +99,7 @@ export class ProveedoresService {
                 `Error creando proveedor: ${errorCreacion.message}`,
             );
         }
-        return creado;
+        return creado as any;
     }
 
     // Guarda (o actualiza) la sugerencia de clasificación de un proveedor.

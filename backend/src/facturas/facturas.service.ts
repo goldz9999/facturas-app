@@ -227,7 +227,7 @@ export class FacturasService {
     let faltaPreguntarCategoria = false;
 
     if (!esAudio && !candidato && factura.empresa) {
-      const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa);
+      const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
       proveedorId = proveedor.id;
       if (proveedor.categoria_id_sugerida) {
         // Proveedor ya conocido: se aplica la sugerencia directo, sin
@@ -294,6 +294,7 @@ export class FacturasService {
           montoDetectado,
           factura.fecha,
           datosComprobante.numero,
+          proveedorId,
         );
         if (duplicado) {
           await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
