@@ -18,15 +18,6 @@ export interface ArchivoEntrada {
   originalname: string;
 }
 
-export interface FindFacturasParams {
-  empresa?: string;
-  n_factura?: string;
-  desde?: string; // fecha ISO YYYY-MM-DD
-  hasta?: string; // fecha ISO YYYY-MM-DD
-  page?: number;
-  pageSize?: number;
-}
-
 @Injectable()
 export class FacturasService {
   constructor(
@@ -37,58 +28,6 @@ export class FacturasService {
     private usuarioLock: UsuarioLockService,
   ) { }
 
-  async findAll(params: FindFacturasParams) {
-    const page = params.page && params.page > 0 ? params.page : 1;
-    const pageSize = params.pageSize && params.pageSize > 0 ? params.pageSize : 20;
-    const from = (page - 1) * pageSize;
-    const to = from + pageSize - 1;
-
-    let query = this.supabase
-      .getClient()
-      .from('facturas')
-      .select('*, factura_items(*)', { count: 'exact' })
-      .order('fecha', { ascending: false })
-      .range(from, to);
-
-    if (params.empresa) {
-      query = query.ilike('empresa', `%${params.empresa}%`);
-    }
-    if (params.n_factura) {
-      query = query.ilike('n_factura', `%${params.n_factura}%`);
-    }
-    if (params.desde) {
-      query = query.gte('fecha', params.desde);
-    }
-    if (params.hasta) {
-      query = query.lte('fecha', params.hasta);
-    }
-
-    const { data, error, count } = await query;
-
-    if (error) {
-      throw new InternalServerErrorException(error.message);
-    }
-
-    const dataConImagen = await Promise.all(
-      (data ?? []).map(async (row) => {
-        if (!row.imagen_url) {
-          return { ...row, imagen_signed_url: null };
-        }
-        const { data: signed } = await this.supabase
-          .getClient()
-          .storage.from('Facturas')
-          .createSignedUrl(row.imagen_url, 3600); // válida 1 hora
-        return { ...row, imagen_signed_url: signed?.signedUrl ?? null };
-      }),
-    );
-
-    return {
-      data: dataConImagen,
-      page,
-      pageSize,
-      total: count ?? 0,
-    };
-  }
   // Punto de entrada único: procesa el archivo directamente en el backend
   // (Gemini + Supabase). usuarioId es obligatorio: todo gasto queda
   // vinculado al usuario que lo subió (RF de trazabilidad).

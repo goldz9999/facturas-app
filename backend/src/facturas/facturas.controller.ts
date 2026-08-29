@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Controller,
-  Get,
   Post,
   Query,
   UploadedFiles,
@@ -14,24 +13,13 @@ import { FacturasService } from './facturas.service';
 export class FacturasController {
   constructor(private readonly facturasService: FacturasService) { }
 
-  @Get()
-  async findAll(
-    @Query('empresa') empresa?: string,
-    @Query('n_factura') n_factura?: string,
-    @Query('desde') desde?: string,
-    @Query('hasta') hasta?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    return this.facturasService.findAll({
-      empresa,
-      n_factura,
-      desde,
-      hasta,
-      page: page ? Number(page) : undefined,
-      pageSize: pageSize ? Number(pageSize) : undefined,
-    });
-  }
+  // GET /facturas (findAll) se eliminó: consultaba la tabla vieja
+  // `facturas`/`factura_items`, previa a la migración al esquema
+  // gastos/comprobantes/pagos/evidencias. Confirmado contra Supabase real
+  // (proyecto Registrodefacturasn8n): ambas tablas están en 0 filas y
+  // ningún flujo activo (Telegram ni /facturas/upload) escribe en ellas.
+  // La fuente de verdad de gastos hoy es GET /gastos/:id y
+  // GET /gastos/usuario/:usuarioId/ultimos (ver GastosController).
 
   // Recibe uno o varios archivos (imágenes o documentos) desde el frontend.
   // "usuario_id" es obligatorio: todo gasto queda vinculado al usuario que
