@@ -47,6 +47,7 @@ Reglas para SubTotal, IGV y Total:
 
 Otras reglas:
 - "Empresa" es el nombre de la empresa que emite la factura. Si no aparece, deja el campo como cadena vacia "".
+- CASO CAPTURA DE YAPE/TRANSFERENCIA: en estas capturas suele aparecer más de un nombre de persona en la imagen (por ejemplo un encabezado grande decorativo, y también el nombre del destinatario real de la plata). El nombre correcto para "Empresa" es el DESTINATARIO del pago (a quién se le pagó), NO el encabezado decorativo ni el nombre del titular de la cuenta que envía. Una pista fuerte: el nombre del destinatario en Yape casi siempre aparece parcialmente enmascarado con un asterisco por privacidad (ej. "Julio Esq*", "Mar** Lóp*") -- si ves un nombre con asterisco al final, ESE es el destinatario correcto para "Empresa", incluso si hay otro nombre más grande o más prominente en la imagen. Ese nombre enmascarado NUNCA debe ir dentro de "Articulos" como si fuera un producto: es el nombre de la empresa/persona, va en "Empresa".
 - "RUC" es el numero de RUC de la empresa emisora (11 digitos en Peru, suele aparecer junto o debajo del nombre de la empresa, a veces precedido por "RUC:"). Si no aparece o no es legible, deja el campo como cadena vacia "".
 - "NumeroFactura" es el numero o identificador de la factura. Si no aparece, deja "".
 

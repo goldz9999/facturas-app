@@ -203,7 +203,22 @@ export class GastosService {
     // entre el comprobante y el Yape). Si lo encuentra, el llamador debe
     // adjuntar el nuevo comprobante/evidencia a ese gasto en vez de crear
     // uno nuevo, y confirmarle al usuario que lo hizo así.
-    async buscarCandidatoParaAgrupar(usuarioId: number, monto: number, ventanaMinutos = 15) {
+    //
+    // `traeComprobante`/`traePago` describen qué pieza aporta el archivo que
+    // se está procesando ahora mismo. Un candidato solo es válido si le
+    // *falta* esa pieza -- si el gasto candidato YA tiene comprobante y el
+    // archivo nuevo también trae uno, no es "el Yape que faltaba", es un
+    // gasto distinto que casualmente coincide en monto (o el mismo archivo
+    // procesado dos veces, ej. por un reintento). Sin este filtro, un gasto
+    // ya completo podía terminar con dos comprobantes y dos pagos pegados
+    // encima -- confirmado en producción (mismo N° de operación de Yape
+    // repetido en dos filas de `pagos` del mismo gasto).
+    async buscarCandidatoParaAgrupar(
+        usuarioId: number,
+        monto: number,
+        opciones: { traeComprobante?: boolean; traePago?: boolean } = {},
+        ventanaMinutos = 15,
+    ) {
         const desde = new Date(Date.now() - ventanaMinutos * 60 * 1000).toISOString();
         const tolerancia = 0.5; // soles
 
@@ -222,9 +237,20 @@ export class GastosService {
             );
         }
 
-        const candidato = (data ?? []).find(
-            (g) => g.monto != null && Math.abs(Number(g.monto) - monto) <= tolerancia,
-        );
+        const candidato = (data ?? []).find((g) => {
+            if (g.monto == null || Math.abs(Number(g.monto) - monto) > tolerancia) return false;
+
+            const yaTieneComprobante = Array.isArray(g.comprobantes) && g.comprobantes.length > 0;
+            const yaTienePago = Array.isArray(g.pagos) && g.pagos.length > 0;
+
+            // Si el archivo nuevo trae comprobante, el candidato debe carecer
+            // de uno (si no, ya tiene su propia factura -- no es el mismo).
+            if (opciones.traeComprobante && yaTieneComprobante) return false;
+            // Mismo criterio para pago (ej. Yape ya registrado antes).
+            if (opciones.traePago && yaTienePago) return false;
+
+            return true;
+        });
         return candidato ?? null;
     }
 

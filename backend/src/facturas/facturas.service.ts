@@ -174,10 +174,23 @@ export class FacturasService {
     // vez de agruparse en uno solo. Lo que sí corrió antes (subir a
     // Storage, Gemini) no necesita serializarse, así que queda afuera del
     // lock para no perder paralelismo donde no hace falta.
+
+    // No siempre un archivo agrupable es "otra factura": si lo único que
+    // aporta es la captura de un pago (Yape/transferencia, sin número de
+    // factura ni empresa emisora), no debe generar un comprobante nuevo --
+    // solo cuelga la evidencia y el pago del mismo gasto. Se considera
+    // "factura" cuando trae número o nombre de empresa emisora. Se calcula
+    // antes de buscar candidato porque ahora también se usa para filtrar
+    // qué gastos son válidos como candidato (ver buscarCandidatoParaAgrupar).
+    const pareceFactura = Boolean(datosComprobante.numero || datosComprobante.empresa_emisora);
+
     const resultado = await this.usuarioLock.runExclusive(usuarioId, async () => {
       const candidato =
         !esAudio && montoDetectado > 0
-          ? await this.gastosService.buscarCandidatoParaAgrupar(usuarioId, montoDetectado)
+          ? await this.gastosService.buscarCandidatoParaAgrupar(usuarioId, montoDetectado, {
+            traeComprobante: pareceFactura,
+            traePago: Boolean(datosPago),
+          })
           : null;
 
       // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
@@ -221,10 +234,8 @@ export class FacturasService {
         // único que aporta es la captura de un pago (Yape/transferencia,
         // sin número de factura ni empresa emisora), no debe generar un
         // comprobante nuevo -- solo cuelga la evidencia y el pago del mismo
-        // gasto. Se considera "factura" cuando trae número o nombre de
-        // empresa emisora.
-        const pareceFactura = Boolean(datosComprobante.numero || datosComprobante.empresa_emisora);
-
+        // gasto. (pareceFactura ya se calculó arriba, antes del lock, para
+        // poder usarse también como filtro en buscarCandidatoParaAgrupar.)
         const { comprobante, evidencia, pago } = await this.gastosService.adjuntarComprobante(
           candidato.id,
           pareceFactura ? datosComprobante : null,
