@@ -177,12 +177,18 @@ export class FacturasService {
 
     // No siempre un archivo agrupable es "otra factura": si lo único que
     // aporta es la captura de un pago (Yape/transferencia, sin número de
-    // factura ni empresa emisora), no debe generar un comprobante nuevo --
-    // solo cuelga la evidencia y el pago del mismo gasto. Se considera
-    // "factura" cuando trae número o nombre de empresa emisora. Se calcula
-    // antes de buscar candidato porque ahora también se usa para filtrar
-    // qué gastos son válidos como candidato (ver buscarCandidatoParaAgrupar).
-    const pareceFactura = Boolean(datosComprobante.numero || datosComprobante.empresa_emisora);
+    // factura), no debe generar un comprobante nuevo -- solo cuelga la
+    // evidencia y el pago del mismo gasto.
+    //
+    // OJO: no se puede usar solo "trae nombre de empresa" como señal, porque
+    // desde que Gemini extrae también el destinatario en capturas de Yape
+    // (para no perder ese dato), un Yape suelto también trae "Empresa"
+    // rellena. La señal real es el número de factura -- casi ninguna captura
+    // de pago lo tiene -- o, en su defecto, que NO se detectó ningún medio
+    // de pago (una factura de verdad normalmente no dice "yape"/"efectivo").
+    const pareceFactura = Boolean(
+      datosComprobante.numero || (!factura.medio_pago && datosComprobante.empresa_emisora),
+    );
 
     const resultado = await this.usuarioLock.runExclusive(usuarioId, async () => {
       const candidato =
@@ -194,16 +200,18 @@ export class FacturasService {
           : null;
 
       // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
-      //    solo aplica a comprobantes con nombre de empresa detectado, no a
-      //    audio (que normalmente no trae un nombre de proveedor confiable)
-      //    ni cuando el archivo se agrupó con un gasto propio reciente (el
-      //    gasto ya existe y ya tiene su categoría, si la tuvo).
+      //    solo aplica a comprobantes que parecen factura real (con nombre
+      //    de empresa emisora, sección 9), no a audio, no a una captura de
+      //    pago suelta (el destinatario de un Yape no es necesariamente un
+      //    "proveedor" -- puede ser una persona, no un negocio), ni cuando
+      //    el archivo se agrupó con un gasto propio reciente (el gasto ya
+      //    existe y ya tiene su categoría, si la tuvo).
       let proveedorId: number | null = null;
       let categoriaId: number | null = null;
       let esPersonalSugerido: boolean | null = null;
       let faltaPreguntarCategoria = false;
 
-      if (!esAudio && !candidato && factura.empresa) {
+      if (!esAudio && !candidato && pareceFactura && factura.empresa) {
         const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
         proveedorId = proveedor.id;
         if (proveedor.categoria_id_sugerida) {
@@ -255,18 +263,20 @@ export class FacturasService {
         // 5b. Guardar el gasto en el esquema nuevo (gastos + comprobante +
         //    evidencia + detalle de items). Si es audio, no hay comprobante
         //    (puede no haber factura física) ni evidencia (el audio no se
-        //    sube a Storage) ni items (no tiene sentido detalle línea por
-        //    línea sin comprobante).
+        //    sube a Storage) ni items. Tampoco hay comprobante/items si NO
+        //    parece factura real (una captura de Yape/transferencia suelta
+        //    es solo evidencia + pago, no un comprobante -- ver
+        //    definición de pareceFactura arriba).
         const { gasto } = await this.gastosService.crear({
           usuario_id: usuarioId,
           descripcion: factura.empresa || null,
           monto: montoDetectado,
           fecha: factura.fecha,
           confianza: factura.confianza,
-          comprobante: esAudio ? null : datosComprobante,
+          comprobante: esAudio || !pareceFactura ? null : datosComprobante,
           evidencia: esAudio ? null : datosEvidencia,
           pago: datosPago,
-          items: esAudio ? undefined : factura.items,
+          items: esAudio || !pareceFactura ? undefined : factura.items,
           categoria_id: categoriaId,
           proveedor_id: proveedorId,
           es_personal: esPersonalSugerido ?? undefined,
@@ -314,6 +324,12 @@ export class FacturasService {
       medio_pago: factura.medio_pago,
       confianza: factura.confianza,
       items: factura.items,
+      // Indica si esto generó un comprobante de verdad en la BD, o si
+      // "empresa"/"items" acá arriba son solo lo que Gemini leyó de una
+      // captura de pago (Yape/transferencia) sin comprobante propio. El
+      // mensaje de Telegram lo usa para no decir "Factura registrada"
+      // cuando en realidad solo se guardó evidencia + pago.
+      parece_factura: pareceFactura,
       vinculado_a: vinculadoA,
       es_audio: esAudio,
       posible_duplicado: posibleDuplicado,

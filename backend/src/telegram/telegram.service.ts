@@ -686,17 +686,32 @@ export class TelegramService {
             return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
         });
 
-        // Si no hay n_factura ni empresa, asumimos que vino de un audio sin
-        // comprobante (no se creó fila en "comprobantes").
-        const tieneComprobante = Boolean(resultado.n_factura || resultado.empresa);
+        // Tres casos posibles: factura real (con comprobante en BD), captura
+        // de pago suelta (Yape/transferencia, sin comprobante -- ver
+        // "parece_factura" en facturas.service.ts), o audio sin comprobante.
+        const medioLabel: Record<string, string> = {
+            yape: 'Yape',
+            transferencia: 'Transferencia',
+            efectivo: 'Efectivo',
+            tarjeta: 'Tarjeta',
+        };
 
-        let msg = tieneComprobante
-            ? '🧾 <b>Factura registrada</b>\n\n'
-            : '💬 <b>Gasto registrado</b> (sin comprobante)\n\n';
-        if (resultado.empresa) msg += `🏢 <b>Empresa:</b> ${esc(resultado.empresa)}\n`;
-        if (resultado.n_factura) msg += `🔢 <b>N° Factura:</b> ${esc(resultado.n_factura)}\n`;
+        let msg: string;
+        if (resultado.parece_factura) {
+            msg = '🧾 <b>Factura registrada</b>\n\n';
+            if (resultado.empresa) msg += `🏢 <b>Empresa:</b> ${esc(resultado.empresa)}\n`;
+            if (resultado.n_factura) msg += `🔢 <b>N° Factura:</b> ${esc(resultado.n_factura)}\n`;
+        } else if (resultado.medio_pago) {
+            // Captura de pago suelta: no hay comprobante propio, pero sí un
+            // destinatario y un medio de pago que vale la pena mostrar.
+            const medio = medioLabel[resultado.medio_pago] || esc(resultado.medio_pago);
+            msg = `📲 <b>Pago registrado (${medio})</b>\n\n`;
+            if (resultado.empresa) msg += `👤 <b>Destinatario:</b> ${esc(resultado.empresa)}\n`;
+        } else {
+            msg = '💬 <b>Gasto registrado</b> (sin comprobante)\n\n';
+        }
         if (resultado.fecha) msg += `📅 <b>Fecha:</b> ${esc(resultado.fecha)}\n`;
-        msg += `\n<b>Productos:</b>\n${lineas.length ? lineas.join('\n') : '(sin productos)'}`;
+        if (lineas.length) msg += `\n<b>Productos:</b>\n${lineas.join('\n')}`;
 
         if (resultado.subtotal != null) msg += `\n\n💵 <b>Sub Total:</b> ${resultado.subtotal}`;
         if (resultado.igv != null) msg += `\n📊 <b>IGV:</b> ${resultado.igv}`;
