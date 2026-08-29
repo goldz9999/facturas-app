@@ -285,9 +285,17 @@ export class TelegramService {
 
     private async confirmarAgrupacion(
         chatId: number | string,
-        vinculadoA: { gasto_id: number; monto: number; comprobante_id: number; evidencia_id: number | null },
+        vinculadoA: {
+            gasto_id: number;
+            monto: number;
+            comprobante_id: number | null;
+            evidencia_id: number | null;
+            pago_id: number | null;
+        },
     ) {
+        const comp = vinculadoA.comprobante_id ?? 0;
         const evid = vinculadoA.evidencia_id ?? 0;
+        const pago = vinculadoA.pago_id ?? 0;
         await this.enviarMensaje(
             chatId,
             `🔗 Vinculé este comprobante al gasto de S/ ${vinculadoA.monto} que registraste hace poco. ¿Es correcto?`,
@@ -296,11 +304,11 @@ export class TelegramService {
                     [
                         {
                             text: '✅ Sí, es correcto',
-                            callback_data: `agrupar_si:${vinculadoA.comprobante_id}:${evid}`,
+                            callback_data: `agrupar_si:${vinculadoA.gasto_id}:${comp}:${evid}:${pago}`,
                         },
                         {
                             text: '❌ No, es otro gasto',
-                            callback_data: `agrupar_no:${vinculadoA.comprobante_id}:${evid}`,
+                            callback_data: `agrupar_no:${vinculadoA.gasto_id}:${comp}:${evid}:${pago}`,
                         },
                     ],
                 ],
@@ -461,15 +469,18 @@ export class TelegramService {
             }
 
             if (accion === 'agrupar_no') {
-                // La heurística se equivocó: el comprobante (primerIdStr) y su
-                // evidencia (segundoIdStr, puede ser 0) se separan del gasto al
-                // que se habían adjuntado, y pasan a tener su propio gasto.
-                // No hace falta chequeo de dueño acá: buscarCandidatoParaAgrupar
-                // (facturas.service.ts) solo agrupa gastos del mismo usuario,
-                // así que este comprobante ya era del usuario que aprieta el botón.
-                const comprobanteId = gastoId; // reutiliza la misma variable: es el primer id del callback
-                const evidenciaId = Number(segundoIdStr) || null;
-                await this.gastosService.separarComprobante(comprobanteId, evidenciaId, usuario.id);
+                // La heurística se equivocó: lo que se agrupó de más (comprobante
+                // y/o evidencia y/o pago, según lo que trajera ese archivo) se
+                // separa del gasto al que se había adjuntado, y pasa a tener su
+                // propio gasto nuevo. No hace falta chequeo de dueño acá:
+                // buscarCandidatoParaAgrupar (facturas.service.ts) solo agrupa
+                // gastos del mismo usuario, así que este adjunto ya era del
+                // usuario que aprieta el botón.
+                const [, , compIdStr, evidIdStr, pagoIdStr] = data.split(':');
+                const comprobanteId = Number(compIdStr) || null;
+                const evidenciaId = Number(evidIdStr) || null;
+                const pagoId = Number(pagoIdStr) || null;
+                await this.gastosService.separarAdjunto(gastoId, comprobanteId, evidenciaId, pagoId, usuario.id);
                 await this.enviarMensaje(chatId, '👍 Listo, lo registré como un gasto aparte.');
                 return;
             }

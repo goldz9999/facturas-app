@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
+import { UsuarioLockService } from '../common/usuario-lock.service';
 import { GeminiService } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
 import { GastosService } from '../gastos/gastos.service';
@@ -33,6 +34,7 @@ export class FacturasService {
     private gemini: GeminiService,
     private gastosService: GastosService,
     private proveedoresService: ProveedoresService,
+    private usuarioLock: UsuarioLockService,
   ) { }
 
   async findAll(params: FindFacturasParams) {
@@ -196,10 +198,6 @@ export class FacturasService {
     //    comprobante + evidencia en vez de crear un gasto nuevo. Ver
     //    diagnóstico técnico, sección 3.
     const montoDetectado = factura.total_factura || 0;
-    const candidato =
-      !esAudio && montoDetectado > 0
-        ? await this.gastosService.buscarCandidatoParaAgrupar(usuarioId, montoDetectado)
-        : null;
 
     const datosComprobante = {
       tipo: 'factura' as const,
@@ -228,94 +226,126 @@ export class FacturasService {
       }
       : null;
 
-    // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
-    //    solo aplica a comprobantes con nombre de empresa detectado, no a
-    //    audio (que normalmente no trae un nombre de proveedor confiable)
-    //    ni cuando el archivo se agrupó con un gasto propio reciente (el
-    //    gasto ya existe y ya tiene su categoría, si la tuvo).
-    let proveedorId: number | null = null;
-    let categoriaId: number | null = null;
-    let esPersonalSugerido: boolean | null = null;
-    let faltaPreguntarCategoria = false;
+    // A partir de acá (buscar si hay un gasto para agrupar -> insertar) todo
+    // corre serializado por usuario (UsuarioLockService). Si dos archivos
+    // del mismo usuario llegan casi juntos (ej. factura + captura de Yape
+    // mandadas seguidas, o un álbum de fotos), sin este lock ambos podrían
+    // leer "no hay gasto con este monto" al mismo tiempo -- ninguno ve
+    // todavía el insert del otro -- y terminar como dos gastos separados en
+    // vez de agruparse en uno solo. Lo que sí corrió antes (subir a
+    // Storage, Gemini) no necesita serializarse, así que queda afuera del
+    // lock para no perder paralelismo donde no hace falta.
+    const resultado = await this.usuarioLock.runExclusive(usuarioId, async () => {
+      const candidato =
+        !esAudio && montoDetectado > 0
+          ? await this.gastosService.buscarCandidatoParaAgrupar(usuarioId, montoDetectado)
+          : null;
 
-    if (!esAudio && !candidato && factura.empresa) {
-      const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
-      proveedorId = proveedor.id;
-      if (proveedor.categoria_id_sugerida) {
-        // Proveedor ya conocido: se aplica la sugerencia directo, sin
-        // preguntar (aprendizaje progresivo).
-        categoriaId = proveedor.categoria_id_sugerida;
-        esPersonalSugerido = proveedor.es_personal_sugerido;
-      } else {
-        // Proveedor nuevo (o sin sugerencia todavía): Telegram debe
-        // preguntar categoría + tipo de gasto, y guardar la respuesta como
-        // sugerencia para la próxima vez.
-        faltaPreguntarCategoria = true;
-      }
-    }
+      // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
+      //    solo aplica a comprobantes con nombre de empresa detectado, no a
+      //    audio (que normalmente no trae un nombre de proveedor confiable)
+      //    ni cuando el archivo se agrupó con un gasto propio reciente (el
+      //    gasto ya existe y ya tiene su categoría, si la tuvo).
+      let proveedorId: number | null = null;
+      let categoriaId: number | null = null;
+      let esPersonalSugerido: boolean | null = null;
+      let faltaPreguntarCategoria = false;
 
-    let gastoId: number;
-    let vinculadoA: { gasto_id: number; monto: number; comprobante_id: number; evidencia_id: number | null } | null =
-      null;
-    let posibleDuplicado: { usuario_nombre: string; nivel: 'alta' | 'media' } | null = null;
-
-    if (candidato) {
-      // No crea un gasto nuevo: cuelga el comprobante y la evidencia del
-      // gasto encontrado por la heurística.
-      const { comprobante, evidencia } = await this.gastosService.adjuntarComprobante(
-        candidato.id,
-        datosComprobante,
-        esAudio ? null : datosEvidencia,
-        datosPago,
-      );
-      gastoId = candidato.id;
-      vinculadoA = {
-        gasto_id: candidato.id,
-        monto: candidato.monto,
-        comprobante_id: comprobante.id,
-        evidencia_id: evidencia?.id ?? null,
-      };
-    } else {
-      // 5b. Guardar el gasto en el esquema nuevo (gastos + comprobante +
-      //    evidencia). Si es audio, no hay comprobante (puede no haber
-      //    factura física) ni evidencia (el audio no se sube a Storage).
-      //    NOTA: los items línea por línea (factura.items) no tienen tabla
-      //    propia todavía en el esquema nuevo; se devuelven en la respuesta
-      //    para el mensaje de Telegram, pero no se persisten aparte. Si se
-      //    necesita el detalle guardado, se puede sumar una tabla
-      //    `comprobante_items` sin tocar esta función.
-      const { gasto } = await this.gastosService.crear({
-        usuario_id: usuarioId,
-        descripcion: factura.empresa || null,
-        monto: montoDetectado,
-        fecha: factura.fecha,
-        confianza: factura.confianza,
-        comprobante: esAudio ? null : datosComprobante,
-        evidencia: esAudio ? null : datosEvidencia,
-        pago: datosPago,
-        categoria_id: categoriaId,
-        proveedor_id: proveedorId,
-        es_personal: esPersonalSugerido ?? undefined,
-      });
-      gastoId = gasto.id;
-
-      // Detección de duplicados entre usuarios distintos (sección 17): solo
-      // tiene sentido para comprobantes (mismo caso del ejemplo, Yape/foto),
-      // no para audio, que no tiene monto confiable para comparar.
-      if (!esAudio && montoDetectado > 0) {
-        const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
-          usuarioId,
-          montoDetectado,
-          factura.fecha,
-          datosComprobante.numero,
-          proveedorId,
-        );
-        if (duplicado) {
-          await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
-          posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+      if (!esAudio && !candidato && factura.empresa) {
+        const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
+        proveedorId = proveedor.id;
+        if (proveedor.categoria_id_sugerida) {
+          // Proveedor ya conocido: se aplica la sugerencia directo, sin
+          // preguntar (aprendizaje progresivo).
+          categoriaId = proveedor.categoria_id_sugerida;
+          esPersonalSugerido = proveedor.es_personal_sugerido;
+        } else {
+          // Proveedor nuevo (o sin sugerencia todavía): Telegram debe
+          // preguntar categoría + tipo de gasto, y guardar la respuesta como
+          // sugerencia para la próxima vez.
+          faltaPreguntarCategoria = true;
         }
       }
-    }
+
+      let gastoId: number;
+      let vinculadoA: {
+        gasto_id: number;
+        monto: number;
+        comprobante_id: number | null;
+        evidencia_id: number | null;
+        pago_id: number | null;
+      } | null = null;
+      let posibleDuplicado: { usuario_nombre: string; nivel: 'alta' | 'media' } | null = null;
+
+      if (candidato) {
+        // No siempre el segundo archivo agrupado es "otra factura": si lo
+        // único que aporta es la captura de un pago (Yape/transferencia,
+        // sin número de factura ni empresa emisora), no debe generar un
+        // comprobante nuevo -- solo cuelga la evidencia y el pago del mismo
+        // gasto. Se considera "factura" cuando trae número o nombre de
+        // empresa emisora.
+        const pareceFactura = Boolean(datosComprobante.numero || datosComprobante.empresa_emisora);
+
+        const { comprobante, evidencia, pago } = await this.gastosService.adjuntarComprobante(
+          candidato.id,
+          pareceFactura ? datosComprobante : null,
+          esAudio ? null : datosEvidencia,
+          datosPago,
+        );
+        gastoId = candidato.id;
+        vinculadoA = {
+          gasto_id: candidato.id,
+          monto: candidato.monto,
+          comprobante_id: comprobante?.id ?? null,
+          evidencia_id: evidencia?.id ?? null,
+          pago_id: pago?.id ?? null,
+        };
+      } else {
+        // 5b. Guardar el gasto en el esquema nuevo (gastos + comprobante +
+        //    evidencia). Si es audio, no hay comprobante (puede no haber
+        //    factura física) ni evidencia (el audio no se sube a Storage).
+        //    NOTA: los items línea por línea (factura.items) no tienen tabla
+        //    propia todavía en el esquema nuevo; se devuelven en la respuesta
+        //    para el mensaje de Telegram, pero no se persisten aparte. Si se
+        //    necesita el detalle guardado, se puede sumar una tabla
+        //    `comprobante_items` sin tocar esta función.
+        const { gasto } = await this.gastosService.crear({
+          usuario_id: usuarioId,
+          descripcion: factura.empresa || null,
+          monto: montoDetectado,
+          fecha: factura.fecha,
+          confianza: factura.confianza,
+          comprobante: esAudio ? null : datosComprobante,
+          evidencia: esAudio ? null : datosEvidencia,
+          pago: datosPago,
+          categoria_id: categoriaId,
+          proveedor_id: proveedorId,
+          es_personal: esPersonalSugerido ?? undefined,
+        });
+        gastoId = gasto.id;
+
+        // Detección de duplicados entre usuarios distintos (sección 17): solo
+        // tiene sentido para comprobantes (mismo caso del ejemplo, Yape/foto),
+        // no para audio, que no tiene monto confiable para comparar.
+        if (!esAudio && montoDetectado > 0) {
+          const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
+            usuarioId,
+            montoDetectado,
+            factura.fecha,
+            datosComprobante.numero,
+            proveedorId,
+          );
+          if (duplicado) {
+            await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
+            posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+          }
+        }
+      }
+
+      return { gastoId, vinculadoA, posibleDuplicado, proveedorId, faltaPreguntarCategoria };
+    });
+
+    const { gastoId, vinculadoA, posibleDuplicado, proveedorId, faltaPreguntarCategoria } = resultado;
 
     // 6. Respuesta con una forma compatible con la que devolvía el webhook
     //    de n8n (empresa, n_factura, fecha, subtotal, igv, total, items),

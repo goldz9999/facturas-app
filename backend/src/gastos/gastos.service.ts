@@ -107,13 +107,21 @@ export class GastosService {
     // por el comando /gastos → "Agregar comprobante".
     async adjuntarComprobante(
         gastoId: number,
-        comprobante: DatosComprobante,
+        comprobante: DatosComprobante | null,
         evidencia?: DatosEvidencia | null,
         pago?: DatosPago | null,
     ) {
         await this.obtenerPorId(gastoId); // valida que el gasto exista
 
-        const comprobanteInsertado = await this.insertarComprobante(gastoId, comprobante);
+        // El comprobante es opcional acá: cuando el archivo agrupado no es
+        // otra factura sino solo una captura de pago (ej. Yape), no hay
+        // comprobante nuevo que registrar -- solo evidencia y/o pago. Insertar
+        // un "comprobante" vacío (sin número, sin empresa) generaba una fila
+        // basura colgada del mismo gasto.
+        let comprobanteInsertado: any = null;
+        if (comprobante) {
+            comprobanteInsertado = await this.insertarComprobante(gastoId, comprobante);
+        }
 
         let evidenciaInsertada: any = null;
         if (evidencia) {
@@ -193,6 +201,80 @@ export class GastosService {
     // (botón "No" en la confirmación): saca el comprobante (y su evidencia,
     // si tiene) del gasto al que se habían adjuntado y les crea un gasto
     // propio, con los mismos datos que ya se habían extraído.
+    // Deshace una agrupación automática que el usuario marcó como incorrecta
+    // (botón "No, es otro gasto"). El adjunto que se agrupó por error puede
+    // ser un comprobante (otra factura agrupada por monto) o, cuando la
+    // heurística agrupó solo una captura de pago (Yape/transferencia) sin
+    // comprobante nuevo, puede ser solo evidencia + pago. En ambos casos se
+    // crea un gasto nuevo y se mueven ahí las filas que correspondan.
+    async separarAdjunto(
+        gastoOrigenId: number,
+        comprobanteId: number | null,
+        evidenciaId: number | null,
+        pagoId: number | null,
+        usuarioId: number,
+    ) {
+        const client = this.supabase.getClient();
+
+        if (comprobanteId) {
+            return this.separarComprobante(comprobanteId, evidenciaId, usuarioId);
+        }
+
+        // Caso sin comprobante: el adjunto de sobra es solo evidencia y/o
+        // pago (típicamente la captura de Yape agrupada de más). El monto
+        // del gasto nuevo sale del pago si se pudo leer; si no, se usa el
+        // del gasto de origen (por algo se agruparon: el monto coincidía).
+        let monto: number | null = null;
+        if (pagoId) {
+            const { data: pago, error: errPago } = await client
+                .from('pagos')
+                .select('*')
+                .eq('id', pagoId)
+                .maybeSingle();
+            if (errPago) {
+                throw new InternalServerErrorException(`Error buscando el pago: ${errPago.message}`);
+            }
+            monto = pago?.monto ?? null;
+        }
+        if (monto == null) {
+            const gastoOrigen = await this.obtenerPorId(gastoOrigenId);
+            monto = gastoOrigen?.monto ?? 0;
+        }
+        const montoFinal: number = monto as number;
+
+        const fechaHoyPeru = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+        const { gasto: nuevoGasto } = await this.crear({
+            usuario_id: usuarioId,
+            descripcion: null,
+            monto: montoFinal,
+            fecha: fechaHoyPeru,
+        });
+
+        if (evidenciaId) {
+            const { error: errMoveEvid } = await client
+                .from('evidencias')
+                .update({ gasto_id: nuevoGasto.id })
+                .eq('id', evidenciaId);
+            if (errMoveEvid) {
+                throw new InternalServerErrorException(
+                    `Error separando la evidencia: ${errMoveEvid.message}`,
+                );
+            }
+        }
+
+        if (pagoId) {
+            const { error: errMovePago } = await client
+                .from('pagos')
+                .update({ gasto_id: nuevoGasto.id })
+                .eq('id', pagoId);
+            if (errMovePago) {
+                throw new InternalServerErrorException(`Error separando el pago: ${errMovePago.message}`);
+            }
+        }
+
+        return nuevoGasto;
+    }
+
     async separarComprobante(
         comprobanteId: number,
         evidenciaId: number | null,
