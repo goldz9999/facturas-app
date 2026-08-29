@@ -37,6 +37,16 @@ export interface DatosPago {
     monto?: number | null;
 }
 
+// Item de detalle de un comprobante (línea de factura). Mismo shape que
+// ItemGasto de arriba, tipado aparte para dejar claro que esto es lo que
+// persiste en `comprobante_items`, colgado del comprobante (no del gasto
+// directamente: un gasto sin comprobante -ej. audio- no tiene items).
+export interface DatosItemComprobante {
+    producto: string;
+    cantidad: number | null;
+    costo: number | null;
+}
+
 export interface CrearGastoParams {
     usuario_id: number;
     descripcion?: string | null;
@@ -49,18 +59,19 @@ export interface CrearGastoParams {
     comprobante?: DatosComprobante | null;
     evidencia?: DatosEvidencia | null;
     pago?: DatosPago | null;
-    items?: ItemGasto[];
+    // Detalle línea por línea del comprobante (sección 7 de requerimientos).
+    // Solo se persiste si `comprobante` también viene (no tiene sentido un
+    // item de comprobante sin comprobante). Antes esto llegaba hasta acá
+    // pero se ignoraba; ver Paso "comprobante_items".
+    items?: DatosItemComprobante[];
 }
 
 @Injectable()
 export class GastosService {
     constructor(private supabase: SupabaseService) { }
 
-    // Crea un gasto y, si vienen, su comprobante y evidencia asociados en el
-    // mismo flujo. Los items (RF de factura_items original) hoy no tienen
-    // tabla propia en el esquema nuevo: se guardan como parte del comprobante
-    // si en el futuro se necesita el detalle línea por línea, se puede crear
-    // una tabla `comprobante_items` sin tocar esta firma.
+    // Crea un gasto y, si vienen, su comprobante, evidencia, pago y detalle
+    // de items asociados en el mismo flujo.
     async crear(params: CrearGastoParams) {
         const client = this.supabase.getClient();
 
@@ -87,6 +98,9 @@ export class GastosService {
         let comprobante: any = null;
         if (params.comprobante) {
             comprobante = await this.insertarComprobante(gasto.id, params.comprobante);
+            if (params.items && params.items.length > 0) {
+                await this.insertarItemsComprobante(comprobante.id, params.items);
+            }
         }
 
         let evidencia: any = null;
@@ -110,6 +124,7 @@ export class GastosService {
         comprobante: DatosComprobante | null,
         evidencia?: DatosEvidencia | null,
         pago?: DatosPago | null,
+        items?: DatosItemComprobante[],
     ) {
         await this.obtenerPorId(gastoId); // valida que el gasto exista
 
@@ -121,6 +136,9 @@ export class GastosService {
         let comprobanteInsertado: any = null;
         if (comprobante) {
             comprobanteInsertado = await this.insertarComprobante(gastoId, comprobante);
+            if (items && items.length > 0) {
+                await this.insertarItemsComprobante(comprobanteInsertado.id, items);
+            }
         }
 
         let evidenciaInsertada: any = null;
@@ -153,7 +171,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*), pagos(*)')
+            .select('*, comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)')
             .eq('usuario_id', usuarioId)
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false })
@@ -179,7 +197,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*), pagos(*)')
+            .select('*, comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)')
             .eq('usuario_id', usuarioId)
             .gte('creado_en', desde)
             .order('creado_en', { ascending: false })
@@ -497,7 +515,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*), pagos(*)')
+            .select('*, comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)')
             .eq('id', gastoId)
             .maybeSingle();
 
@@ -531,6 +549,35 @@ export class GastosService {
             throw new InternalServerErrorException(`Error guardando el comprobante: ${error.message}`);
         }
         return data;
+    }
+
+    // Inserta el detalle línea por línea de un comprobante recién creado.
+    // No valida cantidades/costos: ya vienen normalizados desde
+    // facturas-normalizer.ts (0 en vez de null si Gemini no pudo leerlos).
+    private async insertarItemsComprobante(comprobanteId: number, items: DatosItemComprobante[]) {
+        const filas = items
+            .filter((i) => i.producto && i.producto.trim().length > 0)
+            .map((i) => ({
+                comprobante_id: comprobanteId,
+                producto: i.producto,
+                cantidad: i.cantidad ?? null,
+                costo: i.costo ?? null,
+            }));
+
+        if (filas.length === 0) return [];
+
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('comprobante_items')
+            .insert(filas)
+            .select('*');
+
+        if (error) {
+            throw new InternalServerErrorException(
+                `Error guardando el detalle del comprobante: ${error.message}`,
+            );
+        }
+        return data ?? [];
     }
 
     private async insertarPago(gastoId: number, datos: DatosPago) {

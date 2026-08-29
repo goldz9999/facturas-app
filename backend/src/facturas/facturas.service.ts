@@ -291,6 +291,7 @@ export class FacturasService {
           pareceFactura ? datosComprobante : null,
           esAudio ? null : datosEvidencia,
           datosPago,
+          pareceFactura ? factura.items : undefined,
         );
         gastoId = candidato.id;
         vinculadoA = {
@@ -302,13 +303,10 @@ export class FacturasService {
         };
       } else {
         // 5b. Guardar el gasto en el esquema nuevo (gastos + comprobante +
-        //    evidencia). Si es audio, no hay comprobante (puede no haber
-        //    factura física) ni evidencia (el audio no se sube a Storage).
-        //    NOTA: los items línea por línea (factura.items) no tienen tabla
-        //    propia todavía en el esquema nuevo; se devuelven en la respuesta
-        //    para el mensaje de Telegram, pero no se persisten aparte. Si se
-        //    necesita el detalle guardado, se puede sumar una tabla
-        //    `comprobante_items` sin tocar esta función.
+        //    evidencia + detalle de items). Si es audio, no hay comprobante
+        //    (puede no haber factura física) ni evidencia (el audio no se
+        //    sube a Storage) ni items (no tiene sentido detalle línea por
+        //    línea sin comprobante).
         const { gasto } = await this.gastosService.crear({
           usuario_id: usuarioId,
           descripcion: factura.empresa || null,
@@ -318,6 +316,7 @@ export class FacturasService {
           comprobante: esAudio ? null : datosComprobante,
           evidencia: esAudio ? null : datosEvidencia,
           pago: datosPago,
+          items: esAudio ? undefined : factura.items,
           categoria_id: categoriaId,
           proveedor_id: proveedorId,
           es_personal: esPersonalSugerido ?? undefined,
@@ -439,6 +438,7 @@ export class FacturasService {
           monto: factura.total_factura || null,
         }
         : null,
+      factura.items,
     );
 
     return { comprobante, pago, factura };
