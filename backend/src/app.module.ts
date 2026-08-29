@@ -5,6 +5,7 @@ import { FacturasModule } from './facturas/facturas.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { UsuariosModule } from './usuarios/usuarios.module';
 import { GastosModule } from './gastos/gastos.module';
+import { EmpresasModule } from './empresas/empresas.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { GastosModule } from './gastos/gastos.module';
     TelegramModule,
     UsuariosModule,
     GastosModule,
+    EmpresasModule,
   ],
 })
 export class AppModule { }

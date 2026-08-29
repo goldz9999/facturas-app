@@ -49,6 +49,11 @@ export interface DatosItemComprobante {
 
 export interface CrearGastoParams {
     usuario_id: number;
+    // Empresa a la que pertenece el gasto (RF-23, fundación multi-tenant).
+    // Obligatorio en la práctica: quien llame a crear() debe resolverlo
+    // desde el usuario que genera el gasto (ver FacturasService), no
+    // inventarlo ni dejarlo en null salvo casos ya migrados.
+    empresa_id?: number | null;
     descripcion?: string | null;
     monto: number;
     fecha: string; // YYYY-MM-DD
@@ -75,10 +80,18 @@ export class GastosService {
     async crear(params: CrearGastoParams) {
         const client = this.supabase.getClient();
 
+        // empresa_id (RF-23): si no viene explícito, se resuelve desde el
+        // usuario que genera el gasto. Esto evita que un llamador nuevo (o
+        // un flujo interno como separarAdjunto/separarComprobante) se olvide
+        // de propagarlo y termine creando un gasto huérfano de empresa.
+        const empresaId =
+            params.empresa_id ?? (await this.obtenerEmpresaIdDeUsuario(params.usuario_id));
+
         const { data: gasto, error: errorGasto } = await client
             .from('gastos')
             .insert({
                 usuario_id: params.usuario_id,
+                empresa_id: empresaId,
                 categoria_id: params.categoria_id ?? null,
                 proveedor_id: params.proveedor_id ?? null,
                 es_personal: params.es_personal ?? false,
@@ -526,6 +539,25 @@ export class GastosService {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
         return data;
+    }
+
+    // Resuelve la empresa de un usuario (RF-23). Consulta directa a
+    // `usuarios` en vez de depender de UsuariosService, para no acoplar
+    // GastosModule a UsuariosModule solo por este dato puntual.
+    private async obtenerEmpresaIdDeUsuario(usuarioId: number): Promise<number | null> {
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('usuarios')
+            .select('empresa_id')
+            .eq('id', usuarioId)
+            .maybeSingle();
+
+        if (error) {
+            throw new InternalServerErrorException(
+                `Error resolviendo la empresa del usuario: ${error.message}`,
+            );
+        }
+        return data?.empresa_id ?? null;
     }
 
     private async insertarComprobante(gastoId: number, datos: DatosComprobante) {

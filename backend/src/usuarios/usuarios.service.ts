@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
+import { EmpresasService } from '../empresas/empresas.service';
 
 export interface Usuario {
     id: number;
@@ -14,7 +15,10 @@ export interface Usuario {
 
 @Injectable()
 export class UsuariosService {
-    constructor(private supabaseService: SupabaseService) { }
+    constructor(
+        private supabaseService: SupabaseService,
+        private empresasService: EmpresasService,
+    ) { }
 
     async buscarPorTelegramId(telegramId: number | string): Promise<Usuario | null> {
         const { data, error } = await this.supabaseService
@@ -40,6 +44,13 @@ export class UsuariosService {
     }
 
     async crear(dto: CrearUsuarioDto): Promise<Usuario> {
+        // Si no viene empresa_id explícito, se asigna a la empresa por
+        // defecto (hoy solo existe una). Cuando exista más de una empresa,
+        // omitir este campo seguirá funcionando (cae en la primera
+        // registrada por id), pero deja de ser una elección segura -- en ese
+        // momento habría que exigir el campo en vez de asumir un default.
+        const empresaId = dto.empresa_id ?? (await this.empresasService.obtenerPorDefecto())?.id ?? null;
+
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
@@ -48,6 +59,7 @@ export class UsuariosService {
                 nombre: dto.nombre ?? null,
                 rol: dto.rol ?? 'empleado',
                 activo: dto.activo ?? true,
+                empresa_id: empresaId,
             })
             .select('*')
             .single();
