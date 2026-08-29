@@ -438,6 +438,25 @@ export class GastosService {
         }
     }
 
+    // El usuario confirmó que SÍ era el mismo pago (botón "dup_si"): a
+    // diferencia de descartarDuplicado, acá se deja `posible_duplicado_de`
+    // tal cual -- no se borra, para no perder la trazabilidad de que este
+    // gasto quedó marcado como duplicado en el reporte. Lo único que se
+    // apaga es `pendiente_revision`, porque una persona ya lo validó; si no
+    // se apagara, este gasto quedaría para siempre en cualquier vista futura
+    // de "pendientes de revisar" (RF-20) aunque ya esté resuelto.
+    async confirmarDuplicado(gastoId: number) {
+        const { error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .update({ pendiente_revision: false })
+            .eq('id', gastoId);
+
+        if (error) {
+            throw new InternalServerErrorException(`Error confirmando duplicado: ${error.message}`);
+        }
+    }
+
     // Marca un gasto como confirmado por el usuario (sube su confianza a
     // 'alta') sin tocar el monto. Usado cuando la extracción con confianza
     // "media" resultó ser correcta y el usuario solo confirma.

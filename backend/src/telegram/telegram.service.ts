@@ -504,7 +504,11 @@ export class TelegramService {
             if (accion === 'dup_si') {
                 // Confirma que sí era el mismo pago: se deja la marca
                 // posible_duplicado_de tal cual (no se borra nada, para no
-                // perder trazabilidad — el reporte podrá filtrarlo después).
+                // perder trazabilidad — el reporte podrá filtrarlo después),
+                // pero se apaga pendiente_revision porque ya lo validó una
+                // persona -- si no, este gasto quedaría para siempre en
+                // cualquier vista de "pendientes" aunque ya esté resuelto.
+                await this.gastosService.confirmarDuplicado(gastoId);
                 await this.enviarMensaje(
                     chatId,
                     '🗑️ Anotado, queda marcado como duplicado para el reporte.',
