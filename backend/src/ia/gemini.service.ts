@@ -14,6 +14,8 @@ const JSON_SCHEMA = `{
   "SubTotal": "number|null",
   "IGV": "number|null",
   "Total": "number|null",
+  "MedioPago": "\"yape\" | \"transferencia\" | \"efectivo\" | \"tarjeta\" | \"otro\" | \"\"",
+  "NumeroOperacion": "string",
   "Confianza": "\"alta\" | \"media\" | \"baja\""
 }`;
 
@@ -48,6 +50,14 @@ Otras reglas:
 - "RUC" es el numero de RUC de la empresa emisora (11 digitos en Peru, suele aparecer junto o debajo del nombre de la empresa, a veces precedido por "RUC:"). Si no aparece o no es legible, deja el campo como cadena vacia "".
 - "NumeroFactura" es el numero o identificador de la factura. Si no aparece, deja "".
 
+Reglas para "MedioPago" y "NumeroOperacion":
+- Esta imagen puede ser una FACTURA/BOLETA (documento de compra) o una CAPTURA DE PAGO (Yape, transferencia bancaria u otro comprobante de pago). Identifica cuál es.
+- Si es una captura de Yape (encabezado tipo "Yapeaste a...", logo morado de Yape, "N° de operación"), pon "MedioPago": "yape".
+- Si es una captura de transferencia bancaria (logo de un banco, "N° de operación" u "operación exitosa", cuenta origen/destino), pon "MedioPago": "transferencia".
+- Si la factura/boleta indica explícitamente que se pagó en efectivo o con tarjeta, usa "efectivo" o "tarjeta" segun corresponda.
+- Si es una factura/boleta normal que NO trae ninguna indicación de cómo se pagó, deja "MedioPago" como "" (cadena vacia). No asumas Yape ni ningún otro medio si no hay evidencia clara en la imagen.
+- "NumeroOperacion" es el número de operación/transacción que suelen mostrar las capturas de Yape o transferencia. Si no aparece, deja "".
+
 ${REGLAS_CONFIANZA}
 
 Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un objeto JSON valido, sin texto adicional, sin markdown, que cumpla este schema:
@@ -79,6 +89,8 @@ Otras reglas:
 - "RUC" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de RUC.
 - "NumeroFactura" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de comprobante.
 - "Fecha": si la persona menciona cuándo fue el gasto (ej. "ayer", "el lunes"), intenta inferir la fecha; si no dice nada, deja el campo vacio.
+- "MedioPago": si la persona menciona explícitamente cómo pagó ("le yapeé", "pagué con tarjeta", "transferí", "en efectivo"), usa "yape" | "transferencia" | "tarjeta" | "efectivo" segun corresponda. Si no lo menciona, deja "" (no asumas).
+- "NumeroOperacion" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de operación.
 
 ${REGLAS_CONFIANZA}
 En un audio es normal que la confianza rara vez sea "alta" (el usuario habla de forma aproximada): úsala solo si dio un monto y un articulo claros y sin ambigüedad.
@@ -101,6 +113,8 @@ export interface FacturaExtraida {
     SubTotal?: number | null;
     IGV?: number | null;
     Total?: number | null;
+    MedioPago?: string;
+    NumeroOperacion?: string;
     Confianza?: string;
 }
 

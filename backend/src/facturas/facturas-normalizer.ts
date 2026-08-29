@@ -26,6 +26,15 @@ function normalizarRuc(r?: string | null): string {
     return soloDigitos.length === 11 ? soloDigitos : '';
 }
 
+export type MedioPago = 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro';
+
+const MEDIOS_PAGO: MedioPago[] = ['yape', 'transferencia', 'efectivo', 'tarjeta', 'otro'];
+
+function normalizarMedioPago(m?: string | null): MedioPago | null {
+    const v = String(m ?? '').trim().toLowerCase();
+    return (MEDIOS_PAGO as string[]).includes(v) ? (v as MedioPago) : null;
+}
+
 export type NivelConfianza = 'alta' | 'media' | 'baja';
 
 const NIVELES_CONFIANZA: NivelConfianza[] = ['alta', 'media', 'baja'];
@@ -43,6 +52,8 @@ export interface FacturaNormalizada {
     subtotal: number | null;
     igv: number | null;
     total_factura: number | null;
+    medio_pago: MedioPago | null;
+    numero_operacion: string;
     confianza: NivelConfianza;
     items: Array<{ producto: string; cantidad: number; costo: number }>;
 }
@@ -86,6 +97,8 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
         subtotal,
         igv,
         total_factura: totalFactura,
+        medio_pago: normalizarMedioPago(data.MedioPago),
+        numero_operacion: data.NumeroOperacion != null ? String(data.NumeroOperacion).trim() : '',
         confianza: normalizarConfianza(data.Confianza),
         items,
     };

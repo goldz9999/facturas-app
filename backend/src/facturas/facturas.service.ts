@@ -216,6 +216,18 @@ export class FacturasService {
       origen,
     };
 
+    // 5a. Pago (sección 7/8): solo se registra cuando Gemini identificó un
+    //    medio de pago claro (captura de Yape/transferencia, o el usuario lo
+    //    dijo por audio). Si es una factura sin indicación de pago, no se
+    //    inventa nada.
+    const datosPago = factura.medio_pago
+      ? {
+        medio: factura.medio_pago,
+        numero_operacion: factura.numero_operacion || null,
+        monto: montoDetectado || null,
+      }
+      : null;
+
     // 5c. Matching de proveedor/categoría (sección 9 de requerimientos):
     //    solo aplica a comprobantes con nombre de empresa detectado, no a
     //    audio (que normalmente no trae un nombre de proveedor confiable)
@@ -254,6 +266,7 @@ export class FacturasService {
         candidato.id,
         datosComprobante,
         esAudio ? null : datosEvidencia,
+        datosPago,
       );
       gastoId = candidato.id;
       vinculadoA = {
@@ -279,6 +292,7 @@ export class FacturasService {
         confianza: factura.confianza,
         comprobante: esAudio ? null : datosComprobante,
         evidencia: esAudio ? null : datosEvidencia,
+        pago: datosPago,
         categoria_id: categoriaId,
         proveedor_id: proveedorId,
         es_personal: esPersonalSugerido ?? undefined,
@@ -318,6 +332,7 @@ export class FacturasService {
       subtotal: factura.subtotal,
       igv: factura.igv,
       total: factura.total_factura || 0,
+      medio_pago: factura.medio_pago,
       confianza: factura.confianza,
       items: factura.items,
       vinculado_a: vinculadoA,
@@ -371,7 +386,7 @@ export class FacturasService {
     const datosExtraidos = await this.gemini.extraerFactura(texto, false);
     const factura = normalizarFactura(datosExtraidos);
 
-    const { comprobante } = await this.gastosService.adjuntarComprobante(
+    const { comprobante, pago } = await this.gastosService.adjuntarComprobante(
       gastoId,
       {
         tipo: 'factura',
@@ -387,9 +402,16 @@ export class FacturasService {
         storage_path: nombreArchivoFinal,
         origen: 'telegram',
       },
+      factura.medio_pago
+        ? {
+          medio: factura.medio_pago,
+          numero_operacion: factura.numero_operacion || null,
+          monto: factura.total_factura || null,
+        }
+        : null,
     );
 
-    return { comprobante, factura };
+    return { comprobante, pago, factura };
   }
 
 }

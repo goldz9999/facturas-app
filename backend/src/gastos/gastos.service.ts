@@ -28,6 +28,15 @@ export interface DatosEvidencia {
     origen?: string; // 'telegram' | 'web', default 'telegram'
 }
 
+// Datos de pago (sección 7/8 de requerimientos): entidad separada del
+// comprobante. Presente solo cuando se pudo identificar el medio de pago
+// (ej. captura de Yape/transferencia, o el usuario lo dijo por audio).
+export interface DatosPago {
+    medio: 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro';
+    numero_operacion?: string | null;
+    monto?: number | null;
+}
+
 export interface CrearGastoParams {
     usuario_id: number;
     descripcion?: string | null;
@@ -39,6 +48,7 @@ export interface CrearGastoParams {
     confianza?: 'alta' | 'media' | 'baja' | null;
     comprobante?: DatosComprobante | null;
     evidencia?: DatosEvidencia | null;
+    pago?: DatosPago | null;
     items?: ItemGasto[];
 }
 
@@ -84,7 +94,12 @@ export class GastosService {
             evidencia = await this.insertarEvidencia(gasto.id, params.evidencia);
         }
 
-        return { gasto, comprobante, evidencia };
+        let pago: any = null;
+        if (params.pago) {
+            pago = await this.insertarPago(gasto.id, params.pago);
+        }
+
+        return { gasto, comprobante, evidencia, pago };
     }
 
     // Adjunta un comprobante (y opcionalmente una evidencia) a un gasto ya
@@ -94,6 +109,7 @@ export class GastosService {
         gastoId: number,
         comprobante: DatosComprobante,
         evidencia?: DatosEvidencia | null,
+        pago?: DatosPago | null,
     ) {
         await this.obtenerPorId(gastoId); // valida que el gasto exista
 
@@ -104,7 +120,16 @@ export class GastosService {
             evidenciaInsertada = await this.insertarEvidencia(gastoId, evidencia);
         }
 
-        return { comprobante: comprobanteInsertado, evidencia: evidenciaInsertada };
+        // Caso "factura + Yape" (sección 14): si el segundo archivo agrupado
+        // trae un medio de pago identificado (ej. la captura de Yape llegó
+        // después de la factura), se registra como pago de este mismo gasto
+        // en vez de perderse.
+        let pagoInsertado: any = null;
+        if (pago) {
+            pagoInsertado = await this.insertarPago(gastoId, pago);
+        }
+
+        return { comprobante: comprobanteInsertado, evidencia: evidenciaInsertada, pago: pagoInsertado };
     }
 
     // Solo adjunta la evidencia (ej. cuando llega un audio sin comprobante,
@@ -120,7 +145,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*)')
+            .select('*, comprobantes(*), evidencias(*), pagos(*)')
             .eq('usuario_id', usuarioId)
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false })
@@ -146,7 +171,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*)')
+            .select('*, comprobantes(*), evidencias(*), pagos(*)')
             .eq('usuario_id', usuarioId)
             .gte('creado_en', desde)
             .order('creado_en', { ascending: false })
@@ -371,7 +396,7 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*), evidencias(*)')
+            .select('*, comprobantes(*), evidencias(*), pagos(*)')
             .eq('id', gastoId)
             .maybeSingle();
 
@@ -403,6 +428,25 @@ export class GastosService {
 
         if (error) {
             throw new InternalServerErrorException(`Error guardando el comprobante: ${error.message}`);
+        }
+        return data;
+    }
+
+    private async insertarPago(gastoId: number, datos: DatosPago) {
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('pagos')
+            .insert({
+                gasto_id: gastoId,
+                medio: datos.medio,
+                numero_operacion: datos.numero_operacion ?? null,
+                monto: datos.monto ?? null,
+            })
+            .select('*')
+            .single();
+
+        if (error) {
+            throw new InternalServerErrorException(`Error guardando el pago: ${error.message}`);
         }
         return data;
     }
