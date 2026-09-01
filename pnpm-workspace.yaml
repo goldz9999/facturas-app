@@ -1,6 +1,0 @@
-packages:
-  - "backend"
-  - "frontend"
-allowBuilds:
-  '@nestjs/core': false
-  esbuild: false
