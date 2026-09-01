@@ -6,6 +6,7 @@ import { TelegramModule } from './telegram/telegram.module';
 import { UsuariosModule } from './usuarios/usuarios.module';
 import { GastosModule } from './gastos/gastos.module';
 import { EmpresasModule } from './empresas/empresas.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { EmpresasModule } from './empresas/empresas.module';
     UsuariosModule,
     GastosModule,
     EmpresasModule,
+    AuthModule,
   ],
 })
 export class AppModule { }

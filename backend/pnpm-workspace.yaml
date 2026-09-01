@@ -1,2 +1,3 @@
 allowBuilds:
   '@nestjs/core': false
+  bcrypt: set this to true or false

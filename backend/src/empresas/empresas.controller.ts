@@ -1,25 +1,36 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, Request, UseGuards } from '@nestjs/common';
 import { EmpresasService } from './empresas.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 
-// Endpoints mínimos para gestionar empresas mientras no existe un frontend
-// propio (el nuevo se construye en otro repositorio). Pensado para probarse
-// por Swagger/Postman en esta etapa.
+// Solo super_admin gestiona empresas: son quienes ven/crean el nivel
+// "tenant" completo. Un admin de empresa ni siquiera necesita listar otras.
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('empresas')
 export class EmpresasController {
     constructor(private empresasService: EmpresasService) { }
 
     @Get()
+    @Roles('super_admin')
     listar() {
         return this.empresasService.listar();
     }
 
+    // Un admin puede consultar su propia empresa (chequeo hecho en el controller
+    // porque el service no conoce el request); super_admin puede ver cualquiera.
     @Get(':id')
-    obtenerPorId(@Param('id', ParseIntPipe) id: number) {
+    @Roles('super_admin', 'admin')
+    async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
+        if (req.user.rol === 'admin' && req.user.empresa_id !== id) {
+            return this.empresasService.obtenerPorId(req.user.empresa_id);
+        }
         return this.empresasService.obtenerPorId(id);
     }
 
     @Post()
+    @Roles('super_admin')
     crear(@Body() dto: CrearEmpresaDto) {
         return this.empresasService.crear(dto);
     }
