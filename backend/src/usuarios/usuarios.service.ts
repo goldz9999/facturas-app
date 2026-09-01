@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
+import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
 import { EmpresasService } from '../empresas/empresas.service';
 
 export interface Usuario {
@@ -51,6 +52,14 @@ export class UsuariosService {
     }
 
     async crear(dto: CrearUsuarioDto, forzarEmpresaId?: number): Promise<Usuario> {
+        // Si quien llama es admin de una empresa (no super_admin), forzarEmpresaId
+        // llega seteado desde el controller y pisa cualquier empresa_id del body:
+        // un admin nunca puede crear usuarios para otra empresa.
+        // Si no viene empresa_id explícito ni forzado, se asigna a la empresa por
+        // defecto (hoy solo existe una). Cuando exista más de una empresa,
+        // omitir este campo seguirá funcionando (cae en la primera
+        // registrada por id), pero deja de ser una elección segura -- en ese
+        // momento habría que exigir el campo en vez de asumir un default.
         const empresaId =
             forzarEmpresaId ?? dto.empresa_id ?? (await this.empresasService.obtenerPorDefecto())?.id ?? null;
 
@@ -75,6 +84,64 @@ export class UsuariosService {
         return data;
     }
 
+    // empresaId presente = quien llama es admin de empresa: solo puede tocar
+    // usuarios de su propia empresa (mismo patrón que crear/listar).
+    async actualizar(id: number, dto: ActualizarUsuarioDto, empresaIdPermitido?: number): Promise<Usuario> {
+        if (empresaIdPermitido !== undefined) {
+            await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
+        }
+
+        const cambios: Record<string, unknown> = {};
+        if (dto.nombre !== undefined) cambios.nombre = dto.nombre;
+        if (dto.email !== undefined) cambios.email = dto.email;
+        if (dto.rol !== undefined) cambios.rol = dto.rol;
+        if (dto.activo !== undefined) cambios.activo = dto.activo;
+        if (dto.password) cambios.password_hash = await bcrypt.hash(dto.password, 10);
+
+        const { data, error } = await this.supabaseService
+            .getClient()
+            .from('usuarios')
+            .update(cambios)
+            .eq('id', id)
+            .select('*')
+            .maybeSingle();
+
+        if (error) throw new Error(`Error actualizando usuario: ${error.message}`);
+        if (!data) throw new NotFoundException(`Usuario ${id} no encontrado`);
+        return data;
+    }
+
+    // Borrado real (distinto de desactivar). Los gastos que haya generado
+    // este usuario NO se borran ni quedan huérfanos: conservan su nombre
+    // como snapshot de texto (`gastos.usuario_nombre`) y su `usuario_id`
+    // simplemente queda en null (ON DELETE SET NULL en la FK). Así se puede
+    // dar de baja a alguien que ya no trabaja en la empresa sin perder el
+    // historial de a quién pertenecía cada gasto.
+    async eliminar(id: number, empresaIdPermitido?: number): Promise<void> {
+        if (empresaIdPermitido !== undefined) {
+            await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
+        }
+
+        const { error } = await this.supabaseService.getClient().from('usuarios').delete().eq('id', id);
+
+        if (error) {
+            throw new Error(`Error eliminando usuario: ${error.message}`);
+        }
+    }
+
+    private async verificarPerteneceAEmpresa(id: number, empresaId: number): Promise<void> {
+        const { data, error } = await this.supabaseService
+            .getClient()
+            .from('usuarios')
+            .select('id')
+            .eq('id', id)
+            .eq('empresa_id', empresaId)
+            .maybeSingle();
+
+        if (error) throw new Error(`Error verificando usuario: ${error.message}`);
+        if (!data) throw new NotFoundException(`Usuario ${id} no encontrado en tu empresa`);
+    }
+
     async desactivar(id: number): Promise<Usuario> {
         const { data, error } = await this.supabaseService
             .getClient()
@@ -89,6 +156,7 @@ export class UsuariosService {
         return data;
     }
 
+    // Usado por TelegramService antes de procesar cualquier archivo.
     async estaAutorizado(telegramId: number | string): Promise<Usuario | null> {
         const usuario = await this.buscarPorTelegramId(telegramId);
         return usuario && usuario.activo ? usuario : null;

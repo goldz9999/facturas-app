@@ -87,10 +87,15 @@ export class GastosService {
         const empresaId =
             params.empresa_id ?? (await this.obtenerEmpresaIdDeUsuario(params.usuario_id));
 
+        // Snapshot del nombre: si el usuario se elimina más adelante (ej. ya
+        // no trabaja en la empresa), el gasto sigue mostrando quién lo hizo.
+        const nombreUsuario = await this.obtenerNombreDeUsuario(params.usuario_id);
+
         const { data: gasto, error: errorGasto } = await client
             .from('gastos')
             .insert({
                 usuario_id: params.usuario_id,
+                usuario_nombre: nombreUsuario,
                 empresa_id: empresaId,
                 categoria_id: params.categoria_id ?? null,
                 proveedor_id: params.proveedor_id ?? null,
@@ -584,6 +589,20 @@ export class GastosService {
             );
         }
         return data?.empresa_id ?? null;
+    }
+
+    private async obtenerNombreDeUsuario(usuarioId: number): Promise<string | null> {
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('usuarios')
+            .select('nombre')
+            .eq('id', usuarioId)
+            .maybeSingle();
+
+        if (error) {
+            throw new InternalServerErrorException(`Error resolviendo el nombre del usuario: ${error.message}`);
+        }
+        return data?.nombre ?? null;
     }
 
     private async insertarComprobante(gastoId: number, datos: DatosComprobante) {

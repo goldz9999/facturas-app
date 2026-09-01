@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UseGuards } from '@nestjs/common';
 import { EmpresasService } from './empresas.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
+import { ActualizarEmpresaDto } from './dto/actualizar-empresa.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -33,5 +34,17 @@ export class EmpresasController {
     @Roles('super_admin')
     crear(@Body() dto: CrearEmpresaDto) {
         return this.empresasService.crear(dto);
+    }
+
+    @Patch(':id')
+    @Roles('super_admin')
+    actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarEmpresaDto) {
+        return this.empresasService.actualizar(id, dto);
+    }
+
+    @Delete(':id')
+    @Roles('super_admin')
+    eliminar(@Param('id', ParseIntPipe) id: number) {
+        return this.empresasService.eliminar(id);
     }
 }

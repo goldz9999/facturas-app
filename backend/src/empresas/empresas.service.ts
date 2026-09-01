@@ -1,6 +1,7 @@
 import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
+import { ActualizarEmpresaDto } from './dto/actualizar-empresa.dto';
 
 export interface Empresa {
     id: number;
@@ -69,6 +70,43 @@ export class EmpresasService {
             throw new InternalServerErrorException(`Error creando la empresa: ${error.message}`);
         }
         return data;
+    }
+
+    async actualizar(id: number, dto: ActualizarEmpresaDto): Promise<Empresa> {
+        const cambios: Partial<Pick<Empresa, 'nombre' | 'activa'>> = {};
+        if (dto.nombre !== undefined) cambios.nombre = dto.nombre;
+        if (dto.activa !== undefined) cambios.activa = dto.activa;
+
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('empresas')
+            .update(cambios)
+            .eq('id', id)
+            .select('*')
+            .maybeSingle();
+
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando la empresa: ${error.message}`);
+        }
+        if (!data) {
+            throw new NotFoundException(`Empresa ${id} no encontrada`);
+        }
+        return data;
+    }
+
+    // Borrado real. Falla con un mensaje claro si la empresa todavía tiene
+    // usuarios o gastos asociados (FK), en vez de un error crudo de Postgres.
+    async eliminar(id: number): Promise<void> {
+        const { error } = await this.supabase.getClient().from('empresas').delete().eq('id', id);
+
+        if (error) {
+            if (error.code === '23503') {
+                throw new InternalServerErrorException(
+                    'No se puede eliminar: la empresa todavía tiene usuarios o gastos asociados. Desactívala en vez de eliminarla.',
+                );
+            }
+            throw new InternalServerErrorException(`Error eliminando la empresa: ${error.message}`);
+        }
     }
 
     // Usado por UsuariosService cuando se crea un usuario sin empresa_id
