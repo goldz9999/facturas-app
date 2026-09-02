@@ -23,6 +23,13 @@ export class ActualizarUsuarioDto {
     @IsOptional()
     activo?: boolean;
 
+    // Vincular/desvincular la cuenta de Telegram de un usuario ya existente
+    // (ej. alguien creado primero desde el panel web, sin telegram_id, y
+    // vinculado después una vez que se obtiene su ID de Telegram).
+    @IsNumber()
+    @IsOptional()
+    telegram_id?: number;
+
     // Solo un super_admin puede reasignar la empresa de un usuario; si quien
     // llama es admin de empresa, el controller ignora este campo y fuerza
     // su propia empresa (mismo patrón que en CrearUsuarioDto).

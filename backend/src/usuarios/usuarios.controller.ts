@@ -35,9 +35,24 @@ export class UsuariosController {
 
     // Igual que crear(): admin solo puede editar usuarios de su propia
     // empresa y no puede ascender a nadie a super_admin.
+    //
+    // Protección contra auto-bloqueo: nadie puede cambiar su propio rol ni
+    // desactivar su propia cuenta desde acá, sin importar el rol que tenga
+    // (ni siquiera super_admin) -- si fuera el único super_admin activo,
+    // quedaría sin forma de revertirlo. Debe hacerlo otro usuario con
+    // permisos, o directo en la base de datos como último recurso.
     @Patch(':id')
     @Roles('super_admin', 'admin')
     actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarUsuarioDto, @Request() req) {
+        if (id === req.user.id) {
+            if (dto.rol !== undefined && dto.rol !== req.user.rol) {
+                throw new ForbiddenException('No puedes cambiar tu propio rol');
+            }
+            if (dto.activo === false) {
+                throw new ForbiddenException('No puedes desactivar tu propio usuario');
+            }
+        }
+
         if (req.user.rol === 'admin') {
             if (dto.rol === 'super_admin') {
                 throw new ForbiddenException('Un admin de empresa no puede otorgar el rol super_admin');
@@ -49,13 +64,19 @@ export class UsuariosController {
 
     @Patch(':id/desactivar')
     @Roles('super_admin', 'admin')
-    desactivar(@Param('id', ParseIntPipe) id: number) {
+    desactivar(@Param('id', ParseIntPipe) id: number, @Request() req) {
+        if (id === req.user.id) {
+            throw new ForbiddenException('No puedes desactivar tu propio usuario');
+        }
         return this.usuariosService.desactivar(id);
     }
 
     @Delete(':id')
     @Roles('super_admin', 'admin')
     eliminar(@Param('id', ParseIntPipe) id: number, @Request() req) {
+        if (id === req.user.id) {
+            throw new ForbiddenException('No puedes eliminar tu propio usuario');
+        }
         const empresaId = req.user.rol === 'admin' ? req.user.empresa_id : undefined;
         return this.usuariosService.eliminar(id, empresaId);
     }

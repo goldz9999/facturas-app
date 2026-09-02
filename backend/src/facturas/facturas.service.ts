@@ -203,15 +203,26 @@ export class FacturasService {
       //    solo aplica a comprobantes que parecen factura real (con nombre
       //    de empresa emisora, sección 9), no a audio, no a una captura de
       //    pago suelta (el destinatario de un Yape no es necesariamente un
-      //    "proveedor" -- puede ser una persona, no un negocio), ni cuando
-      //    el archivo se agrupó con un gasto propio reciente (el gasto ya
-      //    existe y ya tiene su categoría, si la tuvo).
+      //    "proveedor" -- puede ser una persona, no un negocio).
+      //
+      //    Cuando el archivo se agrupa con un gasto propio reciente
+      //    (candidato), esto SOLO debe saltarse si ese candidato YA tiene
+      //    categoría asignada (ej. orden factura -> Yape: la factura ya
+      //    resolvió proveedor/categoría, el Yape que llega después no debe
+      //    tocar nada). Si el candidato todavía no tiene categoría (ej.
+      //    orden Yape -> factura: el Yape creó el gasto sin proveedor
+      //    porque no "parecía factura"), esta es la primera y única
+      //    oportunidad de resolverla -- fix del gap documentado en el
+      //    Paso 18.2 del progreso, donde ese caso dejaba el gasto sin
+      //    proveedor ni categoría para siempre.
+      const candidatoSinCategoria = Boolean(candidato) && candidato.categoria_id == null;
+
       let proveedorId: number | null = null;
       let categoriaId: number | null = null;
       let esPersonalSugerido: boolean | null = null;
       let faltaPreguntarCategoria = false;
 
-      if (!esAudio && !candidato && pareceFactura && factura.empresa) {
+      if (!esAudio && pareceFactura && factura.empresa && (!candidato || candidatoSinCategoria)) {
         const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
         proveedorId = proveedor.id;
         if (proveedor.categoria_id_sugerida) {
@@ -252,6 +263,20 @@ export class FacturasService {
           pareceFactura ? factura.items : undefined,
         );
         gastoId = candidato.id;
+
+        // Fix Paso 18.2: si el candidato no tenía categoría y el bloque de
+        // arriba sí pudo resolverla (proveedor ya conocido), se aplica acá
+        // mismo -- el gasto ya existe, no pasa por gastosService.crear().
+        // Si en cambio falta preguntar (proveedor nuevo), no se hace nada
+        // acá: Telegram pregunta con los botones de siempre, usando
+        // faltaPreguntarCategoria + proveedorId ya calculados arriba.
+        if (candidatoSinCategoria && categoriaId) {
+          await this.gastosService.actualizarCategoria(
+            candidato.id,
+            categoriaId,
+            esPersonalSugerido ?? false,
+          );
+        }
         vinculadoA = {
           gasto_id: candidato.id,
           monto: candidato.monto,

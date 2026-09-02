@@ -165,7 +165,16 @@ export class TelegramService {
             // preguntó por confianza, para no encimar dos preguntas seguidas
             // — se retoma cuando esa se resuelva (ver manejarCorreccionMonto
             // y el callback media_ok).
-            if (!esAudio && !resultado.vinculado_a && resultado.falta_categoria && !pidioConfianza) {
+            //
+            // A propósito SIN el filtro "!resultado.vinculado_a" que tenía
+            // antes (fix Paso 18.2): un archivo agrupado (ej. factura que
+            // llega después de un Yape suelto) también puede dejar
+            // falta_categoria=true si el gasto con el que se agrupó nunca
+            // tuvo la oportunidad de clasificarse. pidioConfianza siempre es
+            // false en el caso agrupado (esa confirmación está gateada por
+            // el mismo !vinculado_a más arriba), así que no hay riesgo de
+            // encimar preguntas.
+            if (!esAudio && resultado.falta_categoria && !pidioConfianza) {
                 await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
             }
 

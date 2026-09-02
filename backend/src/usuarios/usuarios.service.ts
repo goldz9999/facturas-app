@@ -97,6 +97,7 @@ export class UsuariosService {
         if (dto.rol !== undefined) cambios.rol = dto.rol;
         if (dto.activo !== undefined) cambios.activo = dto.activo;
         if (dto.password) cambios.password_hash = await bcrypt.hash(dto.password, 10);
+        if (dto.telegram_id !== undefined) cambios.telegram_id = dto.telegram_id;
         // Reasignar empresa solo tiene sentido para quien puede ver todas
         // (super_admin, empresaIdPermitido === undefined). Un admin de
         // empresa nunca debería poder cambiar la empresa de nadie.
