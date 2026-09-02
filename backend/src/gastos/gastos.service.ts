@@ -47,6 +47,26 @@ export interface DatosItemComprobante {
     costo: number | null;
 }
 
+// Filtros de GastosController.listar() / GET /gastos — cubre la sección 24
+// de requerimientos (panel de control: día/semana/mes, personal/empresa,
+// por categoría/proveedor/usuario/proyecto/medio de pago, pendientes de
+// revisión, posibles duplicados, sin comprobante).
+export interface FiltrosGastos {
+    desde?: string; // YYYY-MM-DD, inclusive
+    hasta?: string; // YYYY-MM-DD, inclusive
+    esPersonal?: boolean;
+    categoriaId?: number;
+    proveedorId?: number;
+    usuarioId?: number;
+    pedidoId?: number;
+    medioPago?: string; // 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | otro valor libre en pagos.medio
+    pendienteRevision?: boolean;
+    posibleDuplicado?: boolean; // true = solo gastos con posible_duplicado_de seteado
+    sinComprobante?: boolean; // true = sin fila en comprobantes; false = con comprobante
+    limite?: number; // default 50, tope 200
+    offset?: number; // default 0
+}
+
 export interface CrearGastoParams {
     usuario_id: number;
     // Empresa a la que pertenece el gasto (RF-23, fundación multi-tenant).
@@ -553,6 +573,77 @@ export class GastosService {
             throw new InternalServerErrorException(`Error confirmando el gasto: ${error.message}`);
         }
         return gasto;
+    }
+
+    // Lista de gastos con filtros (sección 24 de requerimientos: día/semana/mes,
+    // personal/empresarial, por categoría/proveedor/usuario/proyecto/medio de
+    // pago, pendientes de revisión, posibles duplicados, sin comprobante).
+    //
+    // `medioPago` y `sinComprobante` se resuelven en memoria después de traer
+    // la página de resultados (no como filtro SQL) porque dependen de tablas
+    // hijas (pagos/comprobantes) y, al volumen actual de un solo tenant
+    // interno, es mucho más simple y legible que pelear con el embedded
+    // filter de PostgREST. Si el volumen crece de forma importante, esto es
+    // el primer punto a revisar (mover el filtro a SQL o a una vista).
+    async listar(filtros: FiltrosGastos, empresaId?: number) {
+        const limite = Math.min(filtros.limite ?? 50, 200);
+        const offset = filtros.offset ?? 0;
+
+        let query = this.supabase
+            .getClient()
+            .from('gastos')
+            .select(
+                '*, categorias(nombre), proveedores(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion)',
+            )
+            .order('fecha', { ascending: false })
+            .order('creado_en', { ascending: false });
+
+        // Aislamiento por empresa: si viene empresaId (quien llama es admin,
+        // no super_admin), se fuerza. super_admin (empresaId undefined) ve
+        // de todas las empresas, igual que ya hace UsuariosService.listar().
+        if (empresaId !== undefined) {
+            query = query.eq('empresa_id', empresaId);
+        }
+
+        if (filtros.desde) query = query.gte('fecha', filtros.desde);
+        if (filtros.hasta) query = query.lte('fecha', filtros.hasta);
+        if (filtros.esPersonal !== undefined) query = query.eq('es_personal', filtros.esPersonal);
+        if (filtros.categoriaId !== undefined) query = query.eq('categoria_id', filtros.categoriaId);
+        if (filtros.proveedorId !== undefined) query = query.eq('proveedor_id', filtros.proveedorId);
+        if (filtros.usuarioId !== undefined) query = query.eq('usuario_id', filtros.usuarioId);
+        if (filtros.pedidoId !== undefined) query = query.eq('pedido_id', filtros.pedidoId);
+        if (filtros.pendienteRevision !== undefined) query = query.eq('pendiente_revision', filtros.pendienteRevision);
+        if (filtros.posibleDuplicado) query = query.not('posible_duplicado_de', 'is', null);
+
+        // Se pide una página más grande cuando hay filtro de medio de pago o
+        // "sin comprobante", porque el filtro real se aplica después de
+        // traer los datos (ver nota arriba) — si no, la paginación quedaría
+        // mal (podríamos devolver menos de `limite` aunque existan más
+        // resultados reales más adelante en la tabla).
+        const necesitaFiltroEnMemoria = !!filtros.medioPago || filtros.sinComprobante !== undefined;
+        const rangoHasta = necesitaFiltroEnMemoria ? offset + limite * 5 - 1 : offset + limite - 1;
+        query = query.range(offset, rangoHasta);
+
+        const { data, error } = await query;
+        if (error) {
+            throw new InternalServerErrorException(`Error listando gastos: ${error.message}`);
+        }
+
+        let resultado = data ?? [];
+
+        if (filtros.medioPago) {
+            resultado = resultado.filter((g: any) =>
+                (g.pagos ?? []).some((p: any) => p.medio === filtros.medioPago),
+            );
+        }
+        if (filtros.sinComprobante !== undefined) {
+            resultado = resultado.filter((g: any) => {
+                const tieneComprobante = (g.comprobantes ?? []).length > 0;
+                return filtros.sinComprobante ? !tieneComprobante : tieneComprobante;
+            });
+        }
+
+        return resultado.slice(0, limite);
     }
 
     async obtenerPorId(gastoId: number) {

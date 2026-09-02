@@ -7,6 +7,7 @@ export interface Empresa {
     id: number;
     nombre: string;
     activa: boolean;
+    logo_url: string | null;
     creado_en: string;
 }
 
@@ -55,7 +56,38 @@ export class EmpresasService {
         return data;
     }
 
-    async crear(dto: CrearEmpresaDto): Promise<Empresa> {
+    // Sube el logo al bucket público "logos-empresas" (creado por migración
+    // SQL) y guarda la URL pública resultante en empresas.logo_url. El path
+    // usa el id de la empresa como prefijo para poder sobreescribir sin
+    // acumular archivos huérfanos.
+    async actualizarLogo(id: number, file: Express.Multer.File): Promise<Empresa> {
+        await this.obtenerPorId(id); // valida que exista, 404 si no
+
+        const extension = file.originalname.split('.').pop() || 'png';
+        const path = `${id}/logo.${extension}`;
+
+        const { error: errorSubida } = await this.supabase
+            .getClient()
+            .storage.from('logos-empresas')
+            .upload(path, file.buffer, { contentType: file.mimetype, upsert: true });
+
+        if (errorSubida) {
+            throw new InternalServerErrorException(`Error subiendo el logo: ${errorSubida.message}`);
+        }
+
+        const { data: urlData } = this.supabase
+            .getClient()
+            .storage.from('logos-empresas')
+            .getPublicUrl(path);
+
+        // Cache-busting: sin esto, el navegador puede seguir mostrando el
+        // logo viejo tras un upsert porque la URL no cambia.
+        const logoUrl = `${urlData.publicUrl}?v=${Date.now()}`;
+
+        return this.actualizar(id, { logo_url: logoUrl });
+    }
+
+    async crear(dto: CrearEmpresaDto, logo?: Express.Multer.File): Promise<Empresa> {
         const { data, error } = await this.supabase
             .getClient()
             .from('empresas')
@@ -69,13 +101,20 @@ export class EmpresasService {
         if (error) {
             throw new InternalServerErrorException(`Error creando la empresa: ${error.message}`);
         }
+
+        if (logo) {
+            // Si la subida del logo falla, la empresa ya quedó creada de
+            // todas formas: se puede agregar el logo después editándola.
+            return this.actualizarLogo(data.id, logo);
+        }
         return data;
     }
 
     async actualizar(id: number, dto: ActualizarEmpresaDto): Promise<Empresa> {
-        const cambios: Partial<Pick<Empresa, 'nombre' | 'activa'>> = {};
+        const cambios: Partial<Pick<Empresa, 'nombre' | 'activa' | 'logo_url'>> = {};
         if (dto.nombre !== undefined) cambios.nombre = dto.nombre;
         if (dto.activa !== undefined) cambios.activa = dto.activa;
+        if (dto.logo_url !== undefined) cambios.logo_url = dto.logo_url;
 
         const { data, error } = await this.supabase
             .getClient()

@@ -97,6 +97,12 @@ export class UsuariosService {
         if (dto.rol !== undefined) cambios.rol = dto.rol;
         if (dto.activo !== undefined) cambios.activo = dto.activo;
         if (dto.password) cambios.password_hash = await bcrypt.hash(dto.password, 10);
+        // Reasignar empresa solo tiene sentido para quien puede ver todas
+        // (super_admin, empresaIdPermitido === undefined). Un admin de
+        // empresa nunca debería poder cambiar la empresa de nadie.
+        if (dto.empresa_id !== undefined && empresaIdPermitido === undefined) {
+            cambios.empresa_id = dto.empresa_id;
+        }
 
         const { data, error } = await this.supabaseService
             .getClient()

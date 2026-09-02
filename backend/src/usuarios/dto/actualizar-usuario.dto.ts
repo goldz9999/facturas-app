@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class ActualizarUsuarioDto {
     @IsString()
@@ -22,4 +22,11 @@ export class ActualizarUsuarioDto {
     @IsBoolean()
     @IsOptional()
     activo?: boolean;
+
+    // Solo un super_admin puede reasignar la empresa de un usuario; si quien
+    // llama es admin de empresa, el controller ignora este campo y fuerza
+    // su propia empresa (mismo patrón que en CrearUsuarioDto).
+    @IsNumber()
+    @IsOptional()
+    empresa_id?: number;
 }

@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { EmpresasService } from './empresas.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
 import { ActualizarEmpresaDto } from './dto/actualizar-empresa.dto';
@@ -32,14 +33,22 @@ export class EmpresasController {
 
     @Post()
     @Roles('super_admin')
-    crear(@Body() dto: CrearEmpresaDto) {
-        return this.empresasService.crear(dto);
+    @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 3 * 1024 * 1024 } })) // 3MB
+    crear(@Body() dto: CrearEmpresaDto, @UploadedFile() file?: Express.Multer.File) {
+        return this.empresasService.crear(dto, file);
     }
 
     @Patch(':id')
     @Roles('super_admin')
     actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarEmpresaDto) {
         return this.empresasService.actualizar(id, dto);
+    }
+
+    @Patch(':id/logo')
+    @Roles('super_admin')
+    @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 3 * 1024 * 1024 } })) // 3MB
+    subirLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
+        return this.empresasService.actualizarLogo(id, file);
     }
 
     @Delete(':id')
