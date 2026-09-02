@@ -1,4 +1,4 @@
-import { Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { ApiQuery } from '@nestjs/swagger';
 import { GastosService, FiltrosGastos } from './gastos.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -65,6 +65,15 @@ export class GastosController {
     @Get(':id')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number) {
         return this.gastosService.obtenerPorId(id);
+    }
+
+    // Guardar cambios / Confirmar gasto desde ExpenseDetail.
+    @Patch(':id')
+    async actualizar(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() body: { monto?: number; descripcion?: string; es_personal?: boolean },
+    ) {
+        return this.gastosService.actualizar(id, body);
     }
 
     @Post(':id/comprobante')

@@ -650,7 +650,9 @@ export class GastosService {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)')
+            .select(
+                '*, categorias(nombre), proveedores(nombre), comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)',
+            )
             .eq('id', gastoId)
             .maybeSingle();
 
@@ -659,6 +661,61 @@ export class GastosService {
         }
         if (!data) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
+        }
+
+        // Las evidencias se guardan en el bucket privado "Facturas" (ver
+        // facturas.service.ts / facturas-cleanup.service.ts) -- ExpenseDetail
+        // necesita una URL para mostrarlas, así que se firma acá (1h de
+        // validez) en vez de exponer el bucket como público.
+        if (data.evidencias && data.evidencias.length > 0) {
+            data.evidencias = await Promise.all(
+                data.evidencias.map(async (ev: any) => {
+                    if (!ev.storage_path) return { ...ev, url: null };
+                    const { data: firmada, error: errorFirma } = await this.supabase
+                        .getClient()
+                        .storage.from('Facturas')
+                        .createSignedUrl(ev.storage_path, 3600);
+                    if (errorFirma) {
+                        // Antes esto se tragaba en silencio y el frontend
+                        // mostraba "Imagen no disponible" sin pista de por
+                        // qué. Logueamos acá (bucket mal escrito, storage_path
+                        // que no existe en el bucket, etc.) para poder
+                        // diagnosticarlo desde los logs de Railway.
+                        console.error(
+                            `[GastosService] Error firmando evidencia ${ev.id} (path: "${ev.storage_path}"): ${errorFirma.message}`,
+                        );
+                    }
+                    return { ...ev, url: firmada?.signedUrl ?? null };
+                }),
+            );
+        }
+
+        return data;
+    }
+
+    // Campos editables desde ExpenseDetail (panel web). No incluye
+    // categoria_id/proveedor_id todavía: el CRUD de Proveedores/Categorías
+    // (pendiente, ver PROGRESO_SIREGG Paso 20) es lo que le da al frontend
+    // una lista real de IDs para elegir -- hasta entonces esos dos campos
+    // se muestran de solo lectura en el detalle.
+    async actualizar(gastoId: number, cambios: Partial<{ monto: number; descripcion: string | null; es_personal: boolean }>) {
+        await this.obtenerPorId(gastoId); // valida que exista, 404 si no
+
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .update({
+                ...cambios,
+                // Confirmar desde el panel resuelve la revisión pendiente,
+                // igual que la confirmación por Telegram.
+                pendiente_revision: false,
+            })
+            .eq('id', gastoId)
+            .select('*')
+            .single();
+
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando el gasto: ${error.message}`);
         }
         return data;
     }
