@@ -1,5 +1,13 @@
 import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
+import { ProveedoresService } from '../proveedores/proveedores.service';
+import { convertirImagenAWebp } from '../facturas/imagen.util';
+
+// Mismo bucket que usa facturas.service.ts para las evidencias que llegan
+// por Telegram/upload -- se repite acá (en vez de importar desde
+// FacturasModule) para no crear una dependencia de módulo que no hace
+// falta: convertirImagenAWebp es una función pura, sin DI de por medio.
+const BUCKET = 'Facturas';
 
 // Un item extraído por Gemini (factura o audio), tal como lo devuelve
 // facturas-normalizer.
@@ -93,7 +101,10 @@ export interface CrearGastoParams {
 
 @Injectable()
 export class GastosService {
-    constructor(private supabase: SupabaseService) { }
+    constructor(
+        private supabase: SupabaseService,
+        private proveedoresService: ProveedoresService,
+    ) { }
 
     // Crea un gasto y, si vienen, su comprobante, evidencia, pago y detalle
     // de items asociados en el mismo flujo.
@@ -201,6 +212,48 @@ export class GastosService {
     async adjuntarEvidencia(gastoId: number, evidencia: DatosEvidencia) {
         await this.obtenerPorId(gastoId);
         return this.insertarEvidencia(gastoId, evidencia);
+    }
+
+    // Sube una imagen (ej. captura de Yape, foto de un comprobante) a
+    // Storage desde el panel web y la deja registrada como evidencia del
+    // gasto -- mismo bucket y misma conversión a WebP que el flujo de
+    // Telegram/upload (ver facturas.service.ts), pero sin pasar por Gemini:
+    // acá el usuario ya llenó los datos a mano (Pago, Comprobante), la
+    // imagen es solo el respaldo visual.
+    async subirEvidenciaImagen(gastoId: number, file: Express.Multer.File) {
+        await this.obtenerPorId(gastoId); // valida que el gasto exista, 404 si no
+
+        const mimeType = file.mimetype;
+        const extMap: Record<string, string> = { 'application/pdf': 'pdf' };
+        const extPorNombre = file.originalname?.includes('.')
+            ? file.originalname.split('.').pop()
+            : undefined;
+        const ext = extPorNombre || extMap[mimeType] || 'bin';
+
+        let nombreArchivoFinal = `web_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        let bufferASubir = file.buffer;
+        let mimeASubir = mimeType;
+
+        const convertida = await convertirImagenAWebp(file.buffer, mimeType);
+        if (convertida) {
+            nombreArchivoFinal = `web_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
+            bufferASubir = convertida.buffer;
+            mimeASubir = convertida.mimetype;
+        }
+
+        const { error: uploadError } = await this.supabase
+            .getClient()
+            .storage.from(BUCKET)
+            .upload(nombreArchivoFinal, bufferASubir, { contentType: mimeASubir, upsert: true });
+        if (uploadError) {
+            throw new InternalServerErrorException(`Error subiendo el archivo: ${uploadError.message}`);
+        }
+
+        return this.insertarEvidencia(gastoId, {
+            tipo: ext === 'pdf' ? 'pdf' : 'imagen',
+            storage_path: nombreArchivoFinal,
+            origen: 'web',
+        });
     }
 
     // Últimos N gastos de un usuario, con su comprobante (si tiene), para el
@@ -693,13 +746,21 @@ export class GastosService {
         return data;
     }
 
-    // Campos editables desde ExpenseDetail (panel web). No incluye
-    // categoria_id/proveedor_id todavía: el CRUD de Proveedores/Categorías
-    // (pendiente, ver PROGRESO_SIREGG Paso 20) es lo que le da al frontend
-    // una lista real de IDs para elegir -- hasta entonces esos dos campos
-    // se muestran de solo lectura en el detalle.
-    async actualizar(gastoId: number, cambios: Partial<{ monto: number; descripcion: string | null; es_personal: boolean }>) {
-        await this.obtenerPorId(gastoId); // valida que exista, 404 si no
+    // Campos editables desde ExpenseDetail (panel web). categoria_id y
+    // proveedor_id ya se pueden editar (GET /categorias expone la lista
+    // para el <select> del frontend; proveedor_id se sigue resolviendo
+    // solo, no hay <select> de proveedores todavía).
+    async actualizar(
+        gastoId: number,
+        cambios: Partial<{
+            monto: number;
+            descripcion: string | null;
+            es_personal: boolean;
+            categoria_id: number;
+            proveedor_id: number;
+        }>,
+    ) {
+        const gastoActual = await this.obtenerPorId(gastoId); // valida que exista, 404 si no
 
         const { data, error } = await this.supabase
             .getClient()
@@ -717,6 +778,22 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error actualizando el gasto: ${error.message}`);
         }
+
+        // Si el usuario corrigió/asignó la categoría a mano desde el panel
+        // web, esa corrección debe alimentar la sugerencia del proveedor
+        // (mismo mecanismo del Paso 9: `guardarSugerencia`), para que la
+        // próxima vez que el bot vea este proveedor por Telegram ya
+        // proponga la categoría correcta en vez de preguntar de nuevo.
+        // Requiere un proveedor conocido (el del gasto, o uno nuevo que
+        // también haya venido en este mismo PATCH) y saber si es
+        // personal o empresa -- si `es_personal` no vino en este PATCH,
+        // se usa el valor que ya tenía el gasto.
+        const proveedorId = cambios.proveedor_id ?? gastoActual.proveedor_id;
+        if (cambios.categoria_id !== undefined && proveedorId) {
+            const esPersonal = cambios.es_personal ?? gastoActual.es_personal;
+            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal);
+        }
+
         return data;
     }
 
@@ -805,7 +882,12 @@ export class GastosService {
         return data ?? [];
     }
 
-    private async insertarPago(gastoId: number, datos: DatosPago) {
+    // Público (antes privado): expuesto ahora también vía POST
+    // /gastos/:id/pago para el botón "Añadir" de Pagos en ExpenseDetail.
+    // Sigue siendo usado internamente por crear()/adjuntarComprobante() para
+    // el flujo de Telegram (factura + Yape), sin cambios ahí.
+    async insertarPago(gastoId: number, datos: DatosPago) {
+        await this.obtenerPorId(gastoId); // valida que el gasto exista, 404 si no
         const { data, error } = await this.supabase
             .getClient()
             .from('pagos')

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiQuery } from '@nestjs/swagger';
-import { GastosService, FiltrosGastos } from './gastos.service';
+import { GastosService, FiltrosGastos, DatosPago } from './gastos.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
@@ -71,7 +72,13 @@ export class GastosController {
     @Patch(':id')
     async actualizar(
         @Param('id', ParseIntPipe) id: number,
-        @Body() body: { monto?: number; descripcion?: string; es_personal?: boolean },
+        @Body() body: {
+            monto?: number;
+            descripcion?: string;
+            es_personal?: boolean;
+            categoria_id?: number;
+            proveedor_id?: number;
+        },
     ) {
         return this.gastosService.actualizar(id, body);
     }
@@ -80,5 +87,27 @@ export class GastosController {
     async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
         return this.gastosService.adjuntarComprobante(id, body);
+    }
+
+    // Botón "Añadir" de Pagos en ExpenseDetail. `medio` es obligatorio (uno
+    // de 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro', ver
+    // DatosPago); numero_operacion y monto son opcionales.
+    @Post(':id/pago')
+    async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago) {
+        return this.gastosService.insertarPago(id, body);
+    }
+
+    // Subir una imagen/foto de respaldo (ej. captura de Yape, foto de un
+    // comprobante) desde el panel web -- reusable tanto para el modal de
+    // Pagos como el de Comprobantes en ExpenseDetail. Mismo límite de
+    // tamaño que /facturas/upload (15MB).
+    @Post(':id/evidencia')
+    @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+    async agregarEvidencia(
+        @Param('id', ParseIntPipe) id: number,
+        @UploadedFile() file: Express.Multer.File,
+    ) {
+        if (!file) throw new BadRequestException('No se recibió ningún archivo.');
+        return this.gastosService.subirEvidenciaImagen(id, file);
     }
 }
