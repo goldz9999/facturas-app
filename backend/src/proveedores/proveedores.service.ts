@@ -115,6 +115,69 @@ export class ProveedoresService {
         return creado as any;
     }
 
+    // Lista de proveedores de una empresa para el panel (ProviderList.jsx /
+    // ProviderDetail.jsx). A diferencia de buscarOCrear/guardarSugerencia
+    // (llamados desde el flujo de Telegram con un proveedor puntual), acá se
+    // agregan también las estadísticas de uso (cuántos gastos y la fecha del
+    // último) porque el frontend las necesita para mostrar la lista y no
+    // tiene otra forma de calcularlas.
+    async listar(empresaId: number): Promise<Array<Proveedor & { veces_usado: number; ultimo_uso: string | null; categoria_sugerida_nombre: string | null }>> {
+        const client = this.supabase.getClient();
+
+        const { data: proveedores, error } = await client
+            .from('proveedores')
+            .select('id, nombre, ruc, categoria_id_sugerida, es_personal_sugerido, empresa_id')
+            .eq('empresa_id', empresaId)
+            .order('nombre', { ascending: true });
+
+        if (error) {
+            throw new InternalServerErrorException(`Error listando proveedores: ${error.message}`);
+        }
+        if (!proveedores || proveedores.length === 0) return [];
+
+        // Uso (conteo + última fecha) calculado sobre `gastos` en vez de
+        // guardarlo desnormalizado en `proveedores` -- se recalcula siempre
+        // fresco y evita otra columna que mantener sincronizada.
+        const { data: gastos, error: errorGastos } = await client
+            .from('gastos')
+            .select('proveedor_id, fecha')
+            .eq('empresa_id', empresaId)
+            .in('proveedor_id', proveedores.map((p) => p.id));
+
+        if (errorGastos) {
+            throw new InternalServerErrorException(`Error calculando uso de proveedores: ${errorGastos.message}`);
+        }
+
+        const usoPorProveedor = new Map<number, { veces: number; ultima: string | null }>();
+        for (const g of gastos ?? []) {
+            if (!g.proveedor_id) continue;
+            const actual = usoPorProveedor.get(g.proveedor_id) ?? { veces: 0, ultima: null };
+            actual.veces += 1;
+            if (g.fecha && (!actual.ultima || g.fecha > actual.ultima)) actual.ultima = g.fecha;
+            usoPorProveedor.set(g.proveedor_id, actual);
+        }
+
+        const idsCategoriaSugerida = [...new Set(proveedores.map((p) => p.categoria_id_sugerida).filter((id): id is number => id != null))];
+        const nombresCategoria = new Map<number, string>();
+        if (idsCategoriaSugerida.length > 0) {
+            const { data: categorias, error: errorCategorias } = await client
+                .from('categorias')
+                .select('id, nombre')
+                .in('id', idsCategoriaSugerida);
+            if (errorCategorias) {
+                throw new InternalServerErrorException(`Error resolviendo categorías sugeridas: ${errorCategorias.message}`);
+            }
+            for (const c of categorias ?? []) nombresCategoria.set(c.id, c.nombre);
+        }
+
+        return proveedores.map((p) => ({
+            ...(p as any),
+            veces_usado: usoPorProveedor.get(p.id)?.veces ?? 0,
+            ultimo_uso: usoPorProveedor.get(p.id)?.ultima ?? null,
+            categoria_sugerida_nombre: p.categoria_id_sugerida ? nombresCategoria.get(p.categoria_id_sugerida) ?? null : null,
+        }));
+    }
+
     // Guarda (o actualiza) la sugerencia de clasificación de un proveedor.
     // Se llama tanto la primera vez que el usuario responde a la pregunta
     // de categoría, como cada vez que corrige una clasificación existente

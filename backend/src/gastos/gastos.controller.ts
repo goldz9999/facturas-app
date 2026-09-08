@@ -86,6 +86,32 @@ export class GastosController {
         return this.gastosService.actualizar(id, body, empresaId);
     }
 
+    // Bandeja de revisión (ReviewInbox.jsx): el usuario confirma que un
+    // gasto con confianza media/baja está correcto tal como lo extrajo la
+    // IA, sin corregir el monto. Sube confianza a 'alta' y apaga
+    // pendiente_revision (ver GastosService.confirmarConfianza, Paso 4.3).
+    @Patch(':id/confirmar-confianza')
+    async confirmarConfianza(@Param('id', ParseIntPipe) id: number) {
+        return this.gastosService.confirmarConfianza(id);
+    }
+
+    // Vista de duplicados (DuplicatesReview.jsx): el usuario confirma que sí
+    // es el mismo pago que ya registró otro usuario. No borra la marca
+    // (posible_duplicado_de queda para trazabilidad), solo apaga
+    // pendiente_revision (ver GastosService.confirmarDuplicado, Paso 4.2).
+    @Patch(':id/confirmar-duplicado')
+    async confirmarDuplicado(@Param('id', ParseIntPipe) id: number) {
+        return this.gastosService.confirmarDuplicado(id);
+    }
+
+    // Vista de duplicados: el usuario confirma que NO es el mismo pago (dos
+    // gastos distintos que solo coincidían en monto/fecha). Limpia la marca
+    // por completo (ver GastosService.descartarDuplicado, Paso 4.2).
+    @Patch(':id/descartar-duplicado')
+    async descartarDuplicado(@Param('id', ParseIntPipe) id: number) {
+        return this.gastosService.descartarDuplicado(id);
+    }
+
     @Post(':id/comprobante')
     async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Request() req) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
