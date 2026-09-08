@@ -7,6 +7,7 @@ export interface Proveedor {
     ruc: string | null;
     categoria_id_sugerida: number | null;
     es_personal_sugerido: boolean | null;
+    empresa_id: number;
 }
 
 // A diferencia de las categorías (lista fija), los proveedores SÍ se crean
@@ -20,6 +21,11 @@ export interface Proveedor {
 // primera vez que aparece un proveedor no hay sugerencia (quedan null) y el
 // bot pregunta; la respuesta (o cualquier corrección posterior) se guarda
 // ahí para la próxima vez.
+//
+// Multiempresa (fix del gap documentado en el informe de avance): el
+// catálogo de proveedores es por empresa desde la migración
+// add_empresa_id_to_proveedores. Antes, dos empresas distintas veían y
+// reutilizaban el mismo proveedor/RUC como si fueran una sola.
 @Injectable()
 export class ProveedoresService {
     constructor(private supabase: SupabaseService) { }
@@ -30,17 +36,22 @@ export class ProveedoresService {
     // PEREZ SAC" (mismo RUC, texto distinto) generen dos filas separadas.
     // Si el RUC no vino en esta factura (frecuente: no siempre es legible),
     // se cae al match por nombre como hasta ahora.
-    async buscarOCrear(nombreCrudo: string, ruc?: string | null): Promise<Proveedor> {
+    //
+    // empresaId es obligatorio: el matching (por RUC o por nombre) nunca
+    // debe cruzar empresas, o una empresa vería/reutilizaría el proveedor
+    // (y su categoría sugerida) de otra.
+    async buscarOCrear(nombreCrudo: string, ruc: string | null | undefined, empresaId: number): Promise<Proveedor> {
         const client = this.supabase.getClient();
         const nombreNormalizado = nombreCrudo.trim();
         const rucNormalizado = ruc?.trim() || null;
-        const columnas = 'id, nombre, ruc, categoria_id_sugerida, es_personal_sugerido';
+        const columnas = 'id, nombre, ruc, categoria_id_sugerida, es_personal_sugerido, empresa_id';
 
         if (rucNormalizado) {
             const { data: porRuc, error: errorPorRuc } = await client
                 .from('proveedores')
                 .select(columnas)
                 .eq('ruc', rucNormalizado)
+                .eq('empresa_id', empresaId)
                 .maybeSingle();
 
             if (errorPorRuc) {
@@ -61,6 +72,7 @@ export class ProveedoresService {
             .from('proveedores')
             .select(columnas)
             .ilike('nombre', nombreNormalizado)
+            .eq('empresa_id', empresaId)
             .maybeSingle();
 
         if (errorBusqueda) {
@@ -77,7 +89,8 @@ export class ProveedoresService {
                 const { error: errorUpdate } = await client
                     .from('proveedores')
                     .update({ ruc: rucNormalizado })
-                    .eq('id', (existente as any).id);
+                    .eq('id', (existente as any).id)
+                    .eq('empresa_id', empresaId);
                 if (errorUpdate) {
                     throw new InternalServerErrorException(
                         `Error completando RUC de proveedor: ${errorUpdate.message}`,
@@ -90,7 +103,7 @@ export class ProveedoresService {
 
         const { data: creado, error: errorCreacion } = await client
             .from('proveedores')
-            .insert({ nombre: nombreNormalizado, ruc: rucNormalizado })
+            .insert({ nombre: nombreNormalizado, ruc: rucNormalizado, empresa_id: empresaId })
             .select(columnas)
             .single();
 
@@ -106,12 +119,17 @@ export class ProveedoresService {
     // Se llama tanto la primera vez que el usuario responde a la pregunta
     // de categoría, como cada vez que corrige una clasificación existente
     // — las correcciones deben alimentar futuras sugerencias (sección 9).
+    //
+    // empresaId opcional por compatibilidad con llamadores que todavía no
+    // lo resuelven explícitamente; cuando viene, es una defensa extra para
+    // no actualizar por error un proveedor de otra empresa.
     async guardarSugerencia(
         proveedorId: number,
         categoriaId: number,
         esPersonal: boolean,
+        empresaId?: number | null,
     ): Promise<void> {
-        const { error } = await this.supabase
+        let query = this.supabase
             .getClient()
             .from('proveedores')
             .update({
@@ -119,6 +137,12 @@ export class ProveedoresService {
                 es_personal_sugerido: esPersonal,
             })
             .eq('id', proveedorId);
+
+        if (empresaId !== undefined && empresaId !== null) {
+            query = query.eq('empresa_id', empresaId);
+        }
+
+        const { error } = await query;
 
         if (error) {
             throw new InternalServerErrorException(

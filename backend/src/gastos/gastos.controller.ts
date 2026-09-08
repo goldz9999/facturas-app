@@ -64,8 +64,9 @@ export class GastosController {
     }
 
     @Get(':id')
-    async obtenerPorId(@Param('id', ParseIntPipe) id: number) {
-        return this.gastosService.obtenerPorId(id);
+    async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
+        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        return this.gastosService.obtenerPorId(id, empresaId);
     }
 
     // Guardar cambios / Confirmar gasto desde ExpenseDetail.
@@ -79,22 +80,26 @@ export class GastosController {
             categoria_id?: number;
             proveedor_id?: number;
         },
+        @Request() req,
     ) {
-        return this.gastosService.actualizar(id, body);
+        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        return this.gastosService.actualizar(id, body, empresaId);
     }
 
     @Post(':id/comprobante')
-    async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
+    async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Request() req) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
-        return this.gastosService.adjuntarComprobante(id, body);
+        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        return this.gastosService.adjuntarComprobante(id, body, undefined, undefined, undefined, empresaId);
     }
 
     // Botón "Añadir" de Pagos en ExpenseDetail. `medio` es obligatorio (uno
     // de 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro', ver
     // DatosPago); numero_operacion y monto son opcionales.
     @Post(':id/pago')
-    async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago) {
-        return this.gastosService.insertarPago(id, body);
+    async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago, @Request() req) {
+        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        return this.gastosService.insertarPago(id, body, empresaId);
     }
 
     // Subir una imagen/foto de respaldo (ej. captura de Yape, foto de un
@@ -106,8 +111,10 @@ export class GastosController {
     async agregarEvidencia(
         @Param('id', ParseIntPipe) id: number,
         @UploadedFile() file: Express.Multer.File,
+        @Request() req,
     ) {
         if (!file) throw new BadRequestException('No se recibió ningún archivo.');
-        return this.gastosService.subirEvidenciaImagen(id, file);
+        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        return this.gastosService.subirEvidenciaImagen(id, file, empresaId);
     }
 }

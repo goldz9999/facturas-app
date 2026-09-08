@@ -174,8 +174,9 @@ export class GastosService {
         evidencia?: DatosEvidencia | null,
         pago?: DatosPago | null,
         items?: DatosItemComprobante[],
+        empresaId?: number | null,
     ) {
-        await this.obtenerPorId(gastoId); // valida que el gasto exista
+        await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa
 
         // El comprobante es opcional acá: cuando el archivo agrupado no es
         // otra factura sino solo una captura de pago (ej. Yape), no hay
@@ -201,7 +202,7 @@ export class GastosService {
         // en vez de perderse.
         let pagoInsertado: any = null;
         if (pago) {
-            pagoInsertado = await this.insertarPago(gastoId, pago);
+            pagoInsertado = await this.insertarPago(gastoId, pago, empresaId);
         }
 
         return { comprobante: comprobanteInsertado, evidencia: evidenciaInsertada, pago: pagoInsertado };
@@ -209,8 +210,8 @@ export class GastosService {
 
     // Solo adjunta la evidencia (ej. cuando llega un audio sin comprobante,
     // pero igual queremos guardar el archivo original como respaldo).
-    async adjuntarEvidencia(gastoId: number, evidencia: DatosEvidencia) {
-        await this.obtenerPorId(gastoId);
+    async adjuntarEvidencia(gastoId: number, evidencia: DatosEvidencia, empresaId?: number | null) {
+        await this.obtenerPorId(gastoId, empresaId);
         return this.insertarEvidencia(gastoId, evidencia);
     }
 
@@ -220,8 +221,8 @@ export class GastosService {
     // Telegram/upload (ver facturas.service.ts), pero sin pasar por Gemini:
     // acá el usuario ya llenó los datos a mano (Pago, Comprobante), la
     // imagen es solo el respaldo visual.
-    async subirEvidenciaImagen(gastoId: number, file: Express.Multer.File) {
-        await this.obtenerPorId(gastoId); // valida que el gasto exista, 404 si no
+    async subirEvidenciaImagen(gastoId: number, file: Express.Multer.File, empresaId?: number | null) {
+        await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa, 404 si no
 
         const mimeType = file.mimetype;
         const extMap: Record<string, string> = { 'application/pdf': 'pdf' };
@@ -699,7 +700,11 @@ export class GastosService {
         return resultado.slice(0, limite);
     }
 
-    async obtenerPorId(gastoId: number) {
+    // empresaId: si viene definido, el gasto debe pertenecer a esa empresa
+    // o se trata como si no existiera (404, no 403 -- evitamos confirmarle
+    // a un usuario de otra empresa que el ID sí existe). super_admin llama
+    // con empresaId = undefined y ve cualquier gasto, igual que en listar().
+    async obtenerPorId(gastoId: number, empresaId?: number | null) {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
@@ -713,6 +718,9 @@ export class GastosService {
             throw new InternalServerErrorException(`Error buscando el gasto: ${error.message}`);
         }
         if (!data) {
+            throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
+        }
+        if (empresaId !== undefined && empresaId !== null && data.empresa_id !== empresaId) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
 
@@ -759,10 +767,11 @@ export class GastosService {
             categoria_id: number;
             proveedor_id: number;
         }>,
+        empresaId?: number | null,
     ) {
-        const gastoActual = await this.obtenerPorId(gastoId); // valida que exista, 404 si no
+        const gastoActual = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
 
-        const { data, error } = await this.supabase
+        let query = this.supabase
             .getClient()
             .from('gastos')
             .update({
@@ -771,9 +780,17 @@ export class GastosService {
                 // igual que la confirmación por Telegram.
                 pendiente_revision: false,
             })
-            .eq('id', gastoId)
-            .select('*')
-            .single();
+            .eq('id', gastoId);
+
+        // Defensa en profundidad: aunque obtenerPorId ya validó la empresa
+        // arriba, este .eq() evita que un update se cuele por una carrera
+        // entre esa validación y este UPDATE (p. ej. el gasto cambiando de
+        // empresa entre medio, aunque hoy no hay flujo que haga eso).
+        if (empresaId !== undefined && empresaId !== null) {
+            query = query.eq('empresa_id', empresaId);
+        }
+
+        const { data, error } = await query.select('*').single();
 
         if (error) {
             throw new InternalServerErrorException(`Error actualizando el gasto: ${error.message}`);
@@ -791,7 +808,7 @@ export class GastosService {
         const proveedorId = cambios.proveedor_id ?? gastoActual.proveedor_id;
         if (cambios.categoria_id !== undefined && proveedorId) {
             const esPersonal = cambios.es_personal ?? gastoActual.es_personal;
-            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal);
+            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal, empresaId);
         }
 
         return data;
@@ -800,7 +817,11 @@ export class GastosService {
     // Resuelve la empresa de un usuario (RF-23). Consulta directa a
     // `usuarios` en vez de depender de UsuariosService, para no acoplar
     // GastosModule a UsuariosModule solo por este dato puntual.
-    private async obtenerEmpresaIdDeUsuario(usuarioId: number): Promise<number | null> {
+    // Público porque FacturasService también necesita resolver la empresa
+    // del usuario, ahora que ProveedoresService.buscarOCrear() requiere
+    // empresaId para el aislamiento multiempresa (evita duplicar esta
+    // consulta en dos servicios).
+    async obtenerEmpresaIdDeUsuario(usuarioId: number): Promise<number | null> {
         const { data, error } = await this.supabase
             .getClient()
             .from('usuarios')
@@ -886,8 +907,8 @@ export class GastosService {
     // /gastos/:id/pago para el botón "Añadir" de Pagos en ExpenseDetail.
     // Sigue siendo usado internamente por crear()/adjuntarComprobante() para
     // el flujo de Telegram (factura + Yape), sin cambios ahí.
-    async insertarPago(gastoId: number, datos: DatosPago) {
-        await this.obtenerPorId(gastoId); // valida que el gasto exista, 404 si no
+    async insertarPago(gastoId: number, datos: DatosPago, empresaId?: number | null) {
+        await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa, 404 si no
         const { data, error } = await this.supabase
             .getClient()
             .from('pagos')

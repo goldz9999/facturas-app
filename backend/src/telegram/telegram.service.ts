@@ -238,7 +238,8 @@ export class TelegramService {
         proveedorId: number | null,
     ) {
         if (!proveedorId) return; // sin nombre de empresa detectado, no hay a quién ligar la sugerencia
-        const categorias = await this.categoriasService.listar();
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        const categorias = await this.categoriasService.listar(gasto.empresa_id);
         if (categorias.length === 0) return;
 
         const filas: Array<Array<{ text: string; callback_data: string }>> = [];
@@ -558,7 +559,16 @@ export class TelegramService {
                 const esPersonal = tipo === 'personal';
 
                 await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal);
-                await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal);
+                // esDuenoDelGasto ya validó este gastoId antes de llegar
+                // acá; se reconsulta solo para leer su empresa_id y que
+                // guardarSugerencia no toque un proveedor de otra empresa.
+                const gastoParaEmpresa = await this.gastosService.obtenerPorId(gastoId);
+                await this.proveedoresService.guardarSugerencia(
+                    proveedorId,
+                    categoriaId,
+                    esPersonal,
+                    gastoParaEmpresa.empresa_id,
+                );
 
                 await this.enviarMensaje(
                     chatId,

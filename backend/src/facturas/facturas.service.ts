@@ -223,18 +223,23 @@ export class FacturasService {
       let faltaPreguntarCategoria = false;
 
       if (!esAudio && pareceFactura && factura.empresa && (!candidato || candidatoSinCategoria)) {
-        const proveedor = await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc);
-        proveedorId = proveedor.id;
-        if (proveedor.categoria_id_sugerida) {
-          // Proveedor ya conocido: se aplica la sugerencia directo, sin
-          // preguntar (aprendizaje progresivo).
-          categoriaId = proveedor.categoria_id_sugerida;
-          esPersonalSugerido = proveedor.es_personal_sugerido;
-        } else {
-          // Proveedor nuevo (o sin sugerencia todavía): Telegram debe
-          // preguntar categoría + tipo de gasto, y guardar la respuesta como
-          // sugerencia para la próxima vez.
-          faltaPreguntarCategoria = true;
+        const empresaIdProveedor = await this.gastosService.obtenerEmpresaIdDeUsuario(usuarioId);
+        const proveedor = empresaIdProveedor
+          ? await this.proveedoresService.buscarOCrear(factura.empresa, factura.ruc, empresaIdProveedor)
+          : null;
+        if (proveedor) {
+          proveedorId = proveedor.id;
+          if (proveedor.categoria_id_sugerida) {
+            // Proveedor ya conocido: se aplica la sugerencia directo, sin
+            // preguntar (aprendizaje progresivo).
+            categoriaId = proveedor.categoria_id_sugerida;
+            esPersonalSugerido = proveedor.es_personal_sugerido;
+          } else {
+            // Proveedor nuevo (o sin sugerencia todavía): Telegram debe
+            // preguntar categoría + tipo de gasto, y guardar la respuesta como
+            // sugerencia para la próxima vez.
+            faltaPreguntarCategoria = true;
+          }
         }
       }
 
