@@ -63,6 +63,19 @@ export class GastosController {
         return this.gastosService.ultimosPorUsuario(usuarioId, n);
     }
 
+    // Totales para Dashboard.jsx (hoy/semana/mes, empresa vs personal, top
+    // categorías/proveedores, últimos gastos). Debe declararse antes de
+    // GET ':id' -- si no, Nest interpreta "resumen" como un :id numérico
+    // que ParseIntPipe rechaza con 400 antes de llegar acá.
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Solo super_admin: filtrar por una empresa específica' })
+    @Get('resumen')
+    async resumen(@Query('empresa_id') empresaId: string | undefined, @Request() req) {
+        const id = req.user.rol === 'super_admin'
+            ? (empresaId !== undefined ? Number(empresaId) : undefined)
+            : req.user.empresa_id;
+        return this.gastosService.resumen(id);
+    }
+
     @Get(':id')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
         const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;

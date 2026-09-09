@@ -700,6 +700,86 @@ export class GastosService {
         return resultado.slice(0, limite);
     }
 
+    // Totales agregados para Dashboard.jsx (hoy/semana/mes, empresa vs
+    // personal, top categorías/proveedores del mes, últimos gastos). Mismo
+    // criterio que ProveedoresService.listar(): no se desnormaliza nada
+    // nuevo, se calcula on-the-fly a partir de `gastos` (Paso 24.3 de
+    // PROGRESO_SIREGG). "Hoy"/"semana"/"mes" se calculan en huso horario de
+    // Perú, igual que ya hace facturas-normalizer.ts / GastosService (ver
+    // fechaHoyPeru más arriba en este archivo).
+    async resumen(empresaId?: number) {
+        const client = this.supabase.getClient();
+
+        const fechaHoyPeru = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+        const hoy = new Date(`${fechaHoyPeru}T00:00:00`);
+
+        // Semana: lunes como inicio (mismo criterio de calendario que usa
+        // el resto de la app en español). getDay(): 0=domingo..6=sábado.
+        const diaSemana = hoy.getDay();
+        const diasDesdeLunes = diaSemana === 0 ? 6 : diaSemana - 1;
+        const inicioSemana = new Date(hoy);
+        inicioSemana.setDate(hoy.getDate() - diasDesdeLunes);
+        const inicioSemanaStr = inicioSemana.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+
+        const inicioMesStr = `${fechaHoyPeru.slice(0, 7)}-01`;
+
+        // Un solo fetch: todo lo del mes en curso alcanza para hoy, semana
+        // y mes a la vez (hoy ⊆ semana ⊆ mes). Los "últimos gastos" se
+        // piden aparte porque pueden ser de un mes anterior si el mes
+        // actual recién empieza.
+        let queryMes = client
+            .from('gastos')
+            .select('monto, fecha, es_personal, categoria_id, proveedor_id, categorias(nombre), proveedores(nombre)')
+            .gte('fecha', inicioMesStr);
+        if (empresaId !== undefined) queryMes = queryMes.eq('empresa_id', empresaId);
+
+        const { data: gastosMes, error: errorMes } = await queryMes;
+        if (errorMes) {
+            throw new InternalServerErrorException(`Error calculando resumen: ${errorMes.message}`);
+        }
+
+        let today = 0, week = 0, month = 0, company = 0, personal = 0;
+        const categorias = new Map<number, { nombre: string; cantidad: number }>();
+        const proveedores = new Map<number, { nombre: string; cantidad: number }>();
+
+        for (const g of gastosMes ?? []) {
+            const monto = Number(g.monto) || 0;
+            month += monto;
+            if (g.fecha === fechaHoyPeru) today += monto;
+            if (g.fecha >= inicioSemanaStr) week += monto;
+            if (g.es_personal) personal += monto; else company += monto;
+
+            if (g.categoria_id != null) {
+                const nombre = (g as any).categorias?.nombre || 'Sin categoría';
+                const actual = categorias.get(g.categoria_id) || { nombre, cantidad: 0 };
+                actual.cantidad += 1;
+                categorias.set(g.categoria_id, actual);
+            }
+            if (g.proveedor_id != null) {
+                const nombre = (g as any).proveedores?.nombre || 'Sin proveedor';
+                const actual = proveedores.get(g.proveedor_id) || { nombre, cantidad: 0 };
+                actual.cantidad += 1;
+                proveedores.set(g.proveedor_id, actual);
+            }
+        }
+
+        const topCategorias = [...categorias.entries()]
+            .map(([id, v]) => ({ id, nombre: v.nombre, cantidad: v.cantidad }))
+            .sort((a, b) => b.cantidad - a.cantidad)
+            .slice(0, 4);
+        const topProveedores = [...proveedores.entries()]
+            .map(([id, v]) => ({ id, nombre: v.nombre, cantidad: v.cantidad }))
+            .sort((a, b) => b.cantidad - a.cantidad)
+            .slice(0, 4);
+
+        // Últimos 5 gastos, mismo formato que GET /gastos (relaciones
+        // completas) para que el frontend pueda reusar mapearGasto/ExpenseTable
+        // sin traducir dos veces.
+        const recientes = await this.listar({ limite: 5 }, empresaId);
+
+        return { today, week, month, company, personal, topCategorias, topProveedores, recientes };
+    }
+
     // empresaId: si viene definido, el gasto debe pertenecer a esa empresa
     // o se trata como si no existiera (404, no 403 -- evitamos confirmarle
     // a un usuario de otra empresa que el ID sí existe). super_admin llama
