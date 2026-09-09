@@ -124,11 +124,63 @@ export class FacturasService {
       ? await this.gemini.transcribirAudio(file.buffer, mimeType)
       : await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
 
+    return this.procesarTextoExtraido(texto, usuarioId, origen, esAudio, {
+      ext,
+      nombreArchivoFinal,
+    });
+  }
+
+  // Registro por texto libre en Telegram (RF pendiente del documento de
+  // progreso): la persona escribe el gasto en vez de mandar una foto o un
+  // audio, ej. "gasté 30 soles en útiles de oficina". Reusa el prompt de
+  // extracción de AUDIO (no uno nuevo) porque ya está pensado para lenguaje
+  // hablado/coloquial -- exactamente lo mismo que alguien tipeando de forma
+  // libre -- y reusa también todo el resto del pipeline (agrupación,
+  // matching de proveedor, duplicados, confianza) llamando al mismo método
+  // privado que usa procesarArchivoIndividual desde el paso 3 en adelante.
+  // Nunca hay archivo/evidencia que subir: no pasa por Storage ni Gemini de
+  // transcripción, solo por la extracción de datos.
+  async procesarTextoLibre(
+    texto: string,
+    usuarioId: number,
+    origen: 'web' | 'telegram' = 'telegram',
+  ) {
+    return this.procesarTextoExtraido(texto, usuarioId, origen, true, null, true);
+  }
+
+  // Punto de entrada común a partir del paso 3 (extracción con Gemini) para
+  // procesarArchivoIndividual (imagen/documento/audio) y procesarTextoLibre
+  // (mensaje de texto). archivoInfo solo aplica cuando esAudio=false (nunca
+  // es el caso de texto libre, que siempre entra con esAudio=true para
+  // reusar el mismo camino "sin comprobante" que ya usa audio).
+  private async procesarTextoExtraido(
+    texto: string,
+    usuarioId: number,
+    origen: 'web' | 'telegram',
+    esAudio: boolean,
+    archivoInfo: { ext: string; nombreArchivoFinal: string } | null,
+    esTextoLibre = false,
+  ) {
     // 3. Extraer datos estructurados con Gemini (prompt distinto si es audio)
     const datosExtraidos = await this.gemini.extraerFactura(texto, esAudio);
 
     // 4. Normalizar (fecha, items) igual que "Separar articulos1"
     const factura = normalizarFactura(datosExtraidos);
+
+    // 4b. Solo para texto libre: a diferencia de una foto o un audio (que
+    // siempre implican que la persona quiso registrar algo), un mensaje de
+    // texto cualquiera ("hola", "gracias") también pasa por acá. Si Gemini
+    // no encontró ningún monto, no se registra nada -- se le devuelve el
+    // control a Telegram para que responda pidiendo aclaración, en vez de
+    // crear un gasto de S/ 0 (decisión tomada en el Paso 25).
+    if (esTextoLibre && !((factura.total_factura ?? 0) > 0)) {
+      return {
+        success: false as const,
+        sin_gasto: true as const,
+      };
+    }
+    const ext = archivoInfo?.ext ?? '';
+    const nombreArchivoFinal = archivoInfo?.nombreArchivoFinal ?? '';
 
     // 5. Heurística de agrupación de evidencias (solo para comprobantes, no
     //    para audio): si el mismo usuario tiene un gasto reciente con el
@@ -342,7 +394,7 @@ export class FacturasService {
     //    y para el flujo de "adjuntar comprobante después"), más info de
     //    agrupación si aplicó la heurística (para que Telegram confirme).
     return {
-      success: true,
+      success: true as const,
       mensaje: 'Gasto registrado correctamente',
       gasto_id: gastoId,
       empresa: factura.empresa,
@@ -362,6 +414,7 @@ export class FacturasService {
       parece_factura: pareceFactura,
       vinculado_a: vinculadoA,
       es_audio: esAudio,
+      es_texto_libre: esTextoLibre,
       posible_duplicado: posibleDuplicado,
       proveedor_id: proveedorId,
       falta_categoria: faltaPreguntarCategoria,

@@ -96,8 +96,14 @@ export class TelegramService {
 
             const archivo = await this.obtenerArchivo(message);
             if (!archivo) {
-                // Es un mensaje de texto u otro tipo que no procesamos (equivalente
-                // a las ramas vacías del "Switch Telegram1" de n8n).
+                // No es foto/audio/documento. Si trae texto (y no es un comando
+                // ni la respuesta a una pregunta ya manejada más arriba), se
+                // interpreta como registro de gasto por texto libre (Paso 25):
+                // "gasté 30 soles en útiles de oficina". Cualquier otro update
+                // sin texto (stickers, etc.) se ignora, igual que antes.
+                if (message.text?.trim()) {
+                    await this.procesarTextoLibre(chatId, usuario.id, message.text.trim());
+                }
                 return;
             }
 
@@ -124,6 +130,12 @@ export class TelegramService {
                 usuario.id,
                 'telegram',
             );
+
+            // procesarArchivoIndividual nunca devuelve success:false en la
+            // práctica (esa rama solo la usa procesarTextoLibre, que comparte
+            // el mismo tipo de retorno) -- este chequeo es solo para que
+            // TypeScript angoste el tipo y no exista en runtime otro camino.
+            if (!resultado.success) return;
 
             // Es audio si el propio pipeline lo marcó como tal, sin importar
             // si la persona dijo o no una empresa/n° de factura al hablar.
@@ -199,6 +211,50 @@ export class TelegramService {
                 chatId,
                 '❌ Hubo un error procesando tu factura. Intenta de nuevo en unos minutos.',
             ).catch(() => undefined);
+        }
+    }
+
+    // --- Registro por texto libre (Paso 25) ---
+
+    // Se llama cuando llega un mensaje de texto que no es un comando ni la
+    // respuesta a una pregunta pendiente (esos casos ya se filtraron en
+    // handleUpdate antes de llegar acá). Reusa el mismo pipeline que ya
+    // existe para audio (FacturasService.procesarTextoExtraido, vía
+    // procesarTextoLibre) porque el prompt de extracción de audio ya está
+    // pensado para lenguaje coloquial libre. El flujo de confirmación que
+    // sigue (confianza media/baja, "¿tienes comprobante?") es
+    // intencionalmente el mismo que usa un audio: un texto libre tampoco
+    // trae comprobante propio, así que no aplica agrupación, matching de
+    // proveedor/categoría ni chequeo de duplicados (mismas limitaciones que
+    // audio hoy, documentadas en el Paso 4.2/4.3 del progreso).
+    private async procesarTextoLibre(chatId: number | string, usuarioId: number, texto: string) {
+        const resultado = await this.facturasService.procesarTextoLibre(texto, usuarioId, 'telegram');
+
+        if (!resultado.success) {
+            await this.enviarMensaje(
+                chatId,
+                '🤔 No reconocí ningún gasto en tu mensaje. Si quieres registrar uno, cuéntame el monto y en qué lo gastaste, ej: "gasté 30 soles en útiles de oficina".',
+            );
+            return;
+        }
+
+        await this.enviarMensaje(chatId, this.armarMensaje(resultado));
+
+        // Igual que con audio: confianza media pregunta, baja pide corregir
+        // el monto directamente; si ninguna de las dos aplicó, recién ahí
+        // preguntamos si tiene comprobante para adjuntar (mismo orden que
+        // usa el flujo de archivos, para no encimar dos preguntas seguidas).
+        let pidioConfianza = false;
+        if (resultado.confianza === 'media') {
+            await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total);
+            pidioConfianza = true;
+        } else if (resultado.confianza === 'baja') {
+            await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total);
+            pidioConfianza = true;
+        }
+
+        if (!pidioConfianza) {
+            await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
         }
     }
 
