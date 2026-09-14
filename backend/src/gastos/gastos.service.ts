@@ -493,24 +493,28 @@ export class GastosService {
     // Detección de duplicados entre USUARIOS DISTINTOS (sección 17 de
     // requerimientos: caso "Wilber le manda la captura a su esposa y ella
     // también la sube"). Compara mismo monto + misma fecha contra gastos de
-    // otros usuarios. El nivel "alta" se declara cuando además coincide el
-    // número de comprobante/factura, o el mismo proveedor (por RUC, cuando
-    // se pudo extraer) — ambas son señales fuertes de que es el mismo pago.
-    // Número de operación de Yape y similitud de imagen quedan fuera hasta
-    // que existan esos campos.
+    // otros usuarios. El nivel "alta" se declara cuando además coincide
+    // alguna señal fuerte: número de comprobante/factura, mismo proveedor
+    // (por proveedor_id, que ya agrupa por RUC vía buscarOCrear), el RUC
+    // crudo de esta factura contra el RUC del proveedor del candidato
+    // (además del match por proveedor_id, cubre el caso borde de dos filas
+    // de `proveedores` con el mismo RUC), o el número de operación de Yape.
+    // Similitud de imagen queda fuera todavía.
     async buscarPosibleDuplicadoEntreUsuarios(
         usuarioId: number,
         monto: number,
         fecha: string,
         numeroComprobante?: string | null,
         proveedorId?: number | null,
+        ruc?: string | null,
+        numeroOperacion?: string | null,
     ) {
         const tolerancia = 0.5; // soles
 
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .select('*, usuarios(nombre), comprobantes(*)')
+            .select('*, usuarios(nombre), comprobantes(*), proveedores(ruc), pagos(numero_operacion)')
             .neq('usuario_id', usuarioId)
             .eq('fecha', fecha)
             .order('creado_en', { ascending: false })
@@ -539,10 +543,27 @@ export class GastosService {
         // no se haya podido leer el número de comprobante.
         const coincideProveedor = !!proveedorId && candidato.proveedor_id === proveedorId;
 
+        // RUC crudo de esta factura contra el RUC guardado en el proveedor
+        // del candidato. Complementa a coincideProveedor: por lo general
+        // ambos coinciden juntos (mismo RUC → mismo proveedor_id, gracias a
+        // ProveedoresService.buscarOCrear), pero esto también agarra el caso
+        // borde de dos filas de `proveedores` con el mismo RUC (ej. una se
+        // creó por nombre antes de que existiera match por RUC).
+        const rucCandidato = (candidato as any).proveedores?.ruc ?? null;
+        const coincideRuc = !!ruc && !!rucCandidato && ruc === rucCandidato;
+
+        // Número de operación de Yape/transferencia (tabla `pagos`, sección
+        // 7/8). Señal fuerte porque es un identificador único del banco/app,
+        // no algo que dos pagos distintos compartan por casualidad.
+        const coincideOperacion =
+            !!numeroOperacion &&
+            Array.isArray((candidato as any).pagos) &&
+            (candidato as any).pagos.some((p: any) => p.numero_operacion && p.numero_operacion === numeroOperacion);
+
         return {
             gasto: candidato,
             usuario_nombre: candidato.usuarios?.nombre ?? 'otro usuario',
-            nivel: coincideNumero || coincideProveedor ? ('alta' as const) : ('media' as const),
+            nivel: coincideNumero || coincideProveedor || coincideRuc || coincideOperacion ? ('alta' as const) : ('media' as const),
         };
     }
 

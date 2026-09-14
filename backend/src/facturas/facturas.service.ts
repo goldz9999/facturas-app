@@ -375,6 +375,8 @@ export class FacturasService {
             factura.fecha,
             datosComprobante.numero,
             proveedorId,
+            factura.ruc || null,
+            datosPago?.numero_operacion || null,
           );
           if (duplicado) {
             await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
