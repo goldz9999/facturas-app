@@ -614,7 +614,7 @@ export class TelegramService {
                 const categoriaId = Number(categoriaIdStr);
                 const esPersonal = tipo === 'personal';
 
-                await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal);
+                await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal, proveedorId);
                 // esDuenoDelGasto ya validó este gastoId antes de llegar
                 // acá; se reconsulta solo para leer su empresa_id y que
                 // guardarSugerencia no toque un proveedor de otra empresa.

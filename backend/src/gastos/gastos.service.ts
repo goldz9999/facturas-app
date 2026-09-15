@@ -567,6 +567,60 @@ export class GastosService {
         };
     }
 
+    // Detección de "yo mismo ya subí esto" (Paso 17.2/23.3, pendiente hasta
+    // el Paso 31): a diferencia de buscarPosibleDuplicadoEntreUsuarios
+    // (sección 17, compara contra OTROS usuarios con tolerancia de
+    // monto+fecha), esto compara contra los propios gastos del usuario, sin
+    // límite de fecha, y solo dispara con una coincidencia de identificador
+    // fuerte (número de comprobante, RUC del proveedor, o número de
+    // operación de Yape/transferencia) -- nunca solo por monto, porque un
+    // mismo usuario puede legítimamente comprar el mismo monto varias veces
+    // en su negocio.
+    async buscarPosibleDuplicadoDelMismoUsuario(
+        usuarioId: number,
+        numeroComprobante?: string | null,
+        ruc?: string | null,
+        numeroOperacion?: string | null,
+    ) {
+        if (!numeroComprobante && !ruc && !numeroOperacion) return null;
+
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .select('*, comprobantes(*), proveedores(ruc), pagos(numero_operacion)')
+            .eq('usuario_id', usuarioId)
+            .order('creado_en', { ascending: false })
+            .limit(50);
+
+        if (error) {
+            throw new InternalServerErrorException(
+                `Error buscando duplicados del mismo usuario: ${error.message}`,
+            );
+        }
+
+        const candidato = (data ?? []).find((g: any) => {
+            const coincideNumero =
+                !!numeroComprobante &&
+                Array.isArray(g.comprobantes) &&
+                g.comprobantes.some((c: any) => c.numero && c.numero === numeroComprobante);
+            const coincideRuc = !!ruc && g.proveedores?.ruc && g.proveedores.ruc === ruc;
+            const coincideOperacion =
+                !!numeroOperacion &&
+                Array.isArray(g.pagos) &&
+                g.pagos.some((p: any) => p.numero_operacion && p.numero_operacion === numeroOperacion);
+            return coincideNumero || coincideRuc || coincideOperacion;
+        });
+
+        if (!candidato) return null;
+
+        // nivel siempre 'alta': a diferencia del match entre usuarios (donde
+        // monto+fecha solo ya cuenta como coincidencia "media"), acá SOLO
+        // se llega si hubo un identificador exacto -- señal fuerte por sí
+        // sola. 'ti mismo' se interpola tal cual en el mensaje de Telegram
+        // existente (avisarPosibleDuplicado), sin tocar ese método.
+        return { gasto: candidato, usuario_nombre: 'ti mismo', nivel: 'alta' as const };
+    }
+
     // Deja registrado en el gasto nuevo que probablemente es el mismo gasto
     // que `duplicadoDeId` (de otro usuario). No borra ni bloquea nada — solo
     // marca, para que el bot avise y para que el reporte lo pueda filtrar.
@@ -622,11 +676,27 @@ export class GastosService {
     // proveedor/categoría). No toca confianza ni pendiente_revision — son
     // conceptos independientes (un gasto puede tener confianza alta y
     // seguir sin categoría, o viceversa).
-    async actualizarCategoria(gastoId: number, categoriaId: number, esPersonal: boolean) {
+    // proveedorId/descripcion (Paso 31, opcionales): cuando este gasto viene
+    // de una agrupación (adjuntarComprobante nunca toca las columnas propias
+    // del gasto, solo inserta filas hijas), este es el único punto donde se
+    // persiste el proveedor real resuelto por el matching -- sin esto, un
+    // gasto agrupado quedaba mostrando "Sin proveedor"/su descripción vieja
+    // para siempre aunque la factura ya estuviera bien vinculada por debajo.
+    async actualizarCategoria(
+        gastoId: number,
+        categoriaId: number,
+        esPersonal: boolean,
+        proveedorId?: number | null,
+        descripcion?: string | null,
+    ) {
+        const update: Record<string, any> = { categoria_id: categoriaId, es_personal: esPersonal };
+        if (proveedorId !== undefined && proveedorId !== null) update.proveedor_id = proveedorId;
+        if (descripcion !== undefined && descripcion !== null) update.descripcion = descripcion;
+
         const { data: gasto, error } = await this.supabase
             .getClient()
             .from('gastos')
-            .update({ categoria_id: categoriaId, es_personal: esPersonal })
+            .update(update)
             .eq('id', gastoId)
             .select('*')
             .single();
@@ -922,6 +992,18 @@ export class GastosService {
     // del usuario, ahora que ProveedoresService.buscarOCrear() requiere
     // empresaId para el aislamiento multiempresa (evita duplicar esta
     // consulta en dos servicios).
+    // Resuelve la empresa de un usuario para poblar gastos.empresa_id (Paso
+    // 16) y como base para el matching de proveedor/categoría (Paso 9).
+    // Fix Paso 31: un super_admin tiene usuarios.empresa_id = null por
+    // diseño (Paso 19.1) -- correcto para que vea todas las empresas en el
+    // panel, pero ese mismo null hacía que CUALQUIER gasto que un
+    // super_admin registrara por Telegram se saltara por completo el
+    // matching de proveedor/categoría (el bloque en facturas.service.ts
+    // está gateado por "if (empresaIdProveedor)"). Mientras exista una sola
+    // empresa real, cae a la misma empresa por defecto que ya usa
+    // UsuariosService.crear() (primera empresa registrada) -- se consulta
+    // acá directo en vez de inyectar EmpresasService para no crear una
+    // dependencia circular entre módulos.
     async obtenerEmpresaIdDeUsuario(usuarioId: number): Promise<number | null> {
         const { data, error } = await this.supabase
             .getClient()
@@ -935,7 +1017,21 @@ export class GastosService {
                 `Error resolviendo la empresa del usuario: ${error.message}`,
             );
         }
-        return data?.empresa_id ?? null;
+        if (data?.empresa_id != null) return data.empresa_id;
+
+        const { data: empresaPorDefecto, error: errorEmpresa } = await this.supabase
+            .getClient()
+            .from('empresas')
+            .select('id')
+            .order('id', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+        if (errorEmpresa) {
+            throw new InternalServerErrorException(
+                `Error resolviendo la empresa por defecto: ${errorEmpresa.message}`,
+            );
+        }
+        return empresaPorDefecto?.id ?? null;
     }
 
     private async obtenerNombreDeUsuario(usuarioId: number): Promise<string | null> {

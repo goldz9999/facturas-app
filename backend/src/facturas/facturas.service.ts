@@ -332,6 +332,8 @@ export class FacturasService {
             candidato.id,
             categoriaId,
             esPersonalSugerido ?? false,
+            proveedorId,
+            factura.empresa || null,
           );
         }
         vinculadoA = {
@@ -365,22 +367,37 @@ export class FacturasService {
         });
         gastoId = gasto.id;
 
-        // Detección de duplicados entre usuarios distintos (sección 17): solo
-        // tiene sentido para comprobantes (mismo caso del ejemplo, Yape/foto),
-        // no para audio, que no tiene monto confiable para comparar.
+        // Detección de duplicados (sección 17): primero contra los propios
+        // gastos del usuario (Paso 31 -- "yo mismo ya subí esto", por
+        // identificador exacto, sin límite de tiempo), y solo si esa no
+        // encuentra nada, contra los de otros usuarios (monto+fecha, con
+        // tolerancia). Solo tiene sentido para comprobantes (mismo caso del
+        // ejemplo, Yape/foto), no para audio, que no tiene monto confiable
+        // para comparar.
         if (!esAudio && montoDetectado > 0) {
-          const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
+          const duplicadoPropio = await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(
             usuarioId,
-            montoDetectado,
-            factura.fecha,
             datosComprobante.numero,
-            proveedorId,
             factura.ruc || null,
             datosPago?.numero_operacion || null,
           );
-          if (duplicado) {
-            await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
-            posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+          if (duplicadoPropio) {
+            await this.gastosService.marcarPosibleDuplicado(gastoId, duplicadoPropio.gasto.id);
+            posibleDuplicado = { usuario_nombre: duplicadoPropio.usuario_nombre, nivel: duplicadoPropio.nivel };
+          } else {
+            const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
+              usuarioId,
+              montoDetectado,
+              factura.fecha,
+              datosComprobante.numero,
+              proveedorId,
+              factura.ruc || null,
+              datosPago?.numero_operacion || null,
+            );
+            if (duplicado) {
+              await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);
+              posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+            }
           }
         }
       }
