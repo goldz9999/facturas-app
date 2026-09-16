@@ -1,114 +1,717 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-const PROMPT_TRANSCRIBIR = `Transcribe TODO el texto visible en esta imagen o documento de factura/recibo, exactamente como aparece: fecha, nombre de la empresa, RUC (numero de 11 digitos que suele aparecer junto al nombre de la empresa emisora), numero de factura, cada articulo o servicio con su cantidad, precio unitario e importe, y el total. Si es una tabla, transcribela renglon por renglon en el mismo orden. No resumas, no interpretes, no calcules nada: solo transcribe el contenido legible, en espanol.`;
+const PROMPT_TRANSCRIBIR = `Eres un motor OCR especializado en comprobantes de pago y documentos comerciales de Perú.
 
-const JSON_SCHEMA = `{
-  "Fecha": "string (YYYY-MM-DD o DD/MM/YYYY)",
-  "Empresa": "string",
-  "RUC": "string",
-  "NumeroFactura": "string",
-  "Articulos": [
-    { "Descripcion": "string", "Cantidad": "number|null", "PrecioUnitario": "number|null", "Importe": "number|null" }
-  ],
-  "SubTotal": "number|null",
-  "IGV": "number|null",
-  "Total": "number|null",
-  "MedioPago": "\"yape\" | \"transferencia\" | \"efectivo\" | \"tarjeta\" | \"otro\" | \"\"",
-  "NumeroOperacion": "string",
-  "Confianza": "\"alta\" | \"media\" | \"baja\""
+Tu única tarea es TRANSCRIBIR el contenido visible del archivo adjunto.
+
+REGLAS OBLIGATORIAS:
+
+1. Transcribe únicamente texto que puedas leer visualmente.
+2. NO inventes, completes, corrijas ni normalices información.
+3. NO interpretes el significado de un texto.
+4. NO calcules totales, subtotales, impuestos, cantidades ni precios.
+5. Si un carácter no puede distinguirse con seguridad, conserva la parte legible y usa "[ILEGIBLE]" únicamente para la parte que realmente no pueda leerse.
+6. Conserva números, decimales, símbolos monetarios, fechas, guiones, barras, puntos y ceros iniciales tal como aparecen.
+7. No conviertas formatos de fecha. Conserva exactamente el formato visible.
+8. Conserva nombres de empresas y personas tal como aparecen, incluyendo mayúsculas, abreviaturas y caracteres especiales.
+9. Conserva el RUC exactamente como aparece. No lo reconstruyas si faltan dígitos.
+10. Conserva el número de comprobante exactamente como aparece.
+11. Si existe una tabla, transcribe sus filas en el mismo orden visual en que aparecen.
+12. No mezcles columnas de diferentes filas.
+13. Si una fila tiene campos vacíos, no inventes valores para completarla.
+14. Si existen anotaciones manuscritas, inclúyelas indicando "[MANUSCRITO]" antes del texto cuando sea necesario distinguirlas del contenido impreso.
+15. Si el documento contiene texto parcialmente tapado, cortado, borroso o fuera de foco, no intentes reconstruirlo.
+16. Si hay varias páginas, transcribe todas las páginas en orden.
+17. Devuelve la transcripción siempre en español (si el documento original trae texto en otro idioma, transcríbelo tal como aparece, sin traducirlo).
+
+IMPORTANTE:
+
+* Este paso NO realiza extracción estructurada.
+* Este paso NO determina cuál es el total correcto.
+* Este paso NO identifica qué persona o empresa debe colocarse posteriormente en "Empresa".
+* Este paso NO interpreta un comprobante de Yape, transferencia o factura.
+* Solo debes devolver la transcripción fiel del contenido visible.
+
+FORMATO:
+Devuelve únicamente la transcripción en texto plano.
+No agregues explicaciones, comentarios, encabezados inventados ni conclusiones.`;
+
+// Prompt para texto que viene de una FACTURA/RECIBO tabular (foto, PDF, doc),
+// ya transcrito por PROMPT_TRANSCRIBIR. Autocontenido (trae su propio schema
+// JSON y sus propias reglas de confianza) -- ya no comparte JSON_SCHEMA /
+// REGLAS_CONFIANZA con el prompt de audio, que tiene sus propias reglas de
+// confianza pensadas para lenguaje hablado.
+const SYSTEM_PROMPT_EXTRACCION_FACTURA = `Eres un sistema de extracción estructurada especializado en comprobantes de pago de Perú.
+
+Tu tarea es convertir el texto OCR proporcionado en un objeto JSON estructurado.
+
+IMPORTANTE:
+El texto recibido puede contener errores de OCR, caracteres ilegibles, columnas desordenadas, texto duplicado o información incompleta.
+
+Tu prioridad absoluta es NO INVENTAR información.
+
+==================================================
+1. PRINCIPIOS GENERALES
+==================================================
+
+* Extrae únicamente información respaldada por el contenido proporcionado.
+* No inventes datos que no aparezcan.
+* No completes números parcialmente visibles.
+* No corrijas silenciosamente errores del OCR.
+* No supongas que un dato existe porque normalmente debería aparecer en una factura.
+* Si un dato no puede determinarse con suficiente evidencia, utiliza el valor vacío o null correspondiente.
+* Si existen varias interpretaciones posibles y ninguna puede resolverse con evidencia suficiente, no elijas arbitrariamente.
+* No confundas datos del comprador con datos del emisor.
+* No confundas datos del titular de una cuenta con datos del destinatario del pago.
+
+Cuando una regla específica de este prompt contradiga una regla general, aplica la regla específica.
+
+==================================================
+2. FECHA
+==================================================
+
+"Fecha" debe contener la fecha del comprobante o del pago.
+
+* Si aparece claramente, extráela.
+* Puedes normalizarla a YYYY-MM-DD.
+* Si la fecha original no puede determinarse con seguridad, devuelve "".
+* NO uses la fecha actual como sustituto.
+* NO uses la fecha de procesamiento, fecha de vencimiento o fecha de impresión si existe otra fecha claramente identificada como fecha de emisión/pago.
+* Si existen varias fechas, selecciona únicamente la que corresponda al comprobante según su etiqueta o contexto.
+
+==================================================
+3. EMPRESA
+==================================================
+
+"Empresa" corresponde al emisor del comprobante.
+
+En una factura o boleta:
+
+* Usa el nombre comercial o razón social del emisor.
+* No uses el nombre del cliente/comprador.
+* No uses el nombre del cajero o vendedor.
+
+En un comprobante de Yape o transferencia:
+
+* "Empresa" corresponde al DESTINATARIO del pago.
+* No uses el nombre del remitente.
+* No uses el nombre del titular de la cuenta de origen.
+* Si el destinatario aparece parcialmente oculto con "*", conserva exactamente la parte visible.
+* Un nombre de persona puede ser válido como Empresa cuando representa al destinatario del pago.
+
+Si no puede determinarse claramente:
+"Empresa": ""
+
+==================================================
+4. RUC
+==================================================
+
+"RUC" corresponde exclusivamente al RUC del emisor.
+
+* Debe tener 11 dígitos para considerarse un RUC peruano completo.
+* Si aparece como "RUC:", "R.U.C." o equivalente, extráelo.
+* No confundas RUC con DNI, teléfono, número de operación, código de cliente o número de comprobante.
+* No completes dígitos faltantes.
+* Si no existe o no puede leerse con seguridad:
+"RUC": ""
+
+==================================================
+5. NÚMERO DE COMPROBANTE
+==================================================
+
+"NumeroFactura" debe contener el identificador del comprobante.
+
+Puede aparecer como:
+
+* Factura
+* Boleta
+* F001-123
+* B001-123
+* Serie + correlativo
+* Número de comprobante equivalente
+
+Conserva el identificador tal como aparece, salvo una normalización mínima necesaria para eliminar errores evidentes de OCR (a diferencia del paso de transcripción, acá sí se permite esta normalización mínima).
+
+No uses:
+
+* RUC
+* número de operación bancaria
+* código de autorización
+* código QR
+* número de pedido
+
+Si no existe:
+"NumeroFactura": ""
+
+==================================================
+6. ARTÍCULOS Y SERVICIOS
+==================================================
+
+Cada producto o servicio debe convertirse en un elemento independiente de "Articulos".
+
+Para cada elemento:
+
+{
+"Descripcion": string,
+"Cantidad": number|null,
+"PrecioUnitario": number|null,
+"Importe": number|null
+}
+
+REGLA DE CANTIDAD:
+
+A. Unidades enteras:
+Si el comprobante indica una cantidad contable de unidades, usa esa cantidad.
+
+Ejemplo:
+"2 botellas"
+→ Cantidad: 2
+→ Descripcion: "Botellas"
+
+B. Peso o volumen:
+Si la cantidad corresponde a kg, g, gr, ml, l, litros u otra unidad de medida:
+
+→ Cantidad: null
+→ Incluye la medida en Descripcion.
+
+Ejemplo:
+"Tomate 3 kg"
+→ Descripcion: "Tomate (3 kg)"
+→ Cantidad: null
+
+C. Cantidad no visible:
+→ Cantidad: null
+
+Nunca inventes Cantidad = 1 solamente porque existe un artículo.
+
+==================================================
+7. PRECIO UNITARIO
+==================================================
+
+"PrecioUnitario" significa exclusivamente el precio correspondiente a una unidad contable.
+
+* Si Cantidad es un número entero y el comprobante muestra el precio unitario, extráelo.
+* Si Cantidad es null porque el producto está expresado por peso/volumen, PrecioUnitario debe ser null.
+* Si no existe precio unitario visible, utiliza null.
+* No calcules PrecioUnitario dividiendo Importe entre Cantidad.
+* No calcules precios salvo que el documento lo indique explícitamente.
+
+Excepción:
+Si Cantidad = 1 y el comprobante muestra únicamente el importe de la línea, puede utilizarse ese mismo importe como PrecioUnitario.
+
+==================================================
+8. IMPORTE DE LÍNEA
+==================================================
+
+"Importe" representa el total de esa línea del comprobante.
+
+* Usa el importe mostrado en la línea.
+* No confundas precio unitario con importe.
+* No recalcules el importe mediante multiplicación si el documento ya muestra un importe.
+* Si el importe no puede determinarse:
+null
+
+==================================================
+9. SUBTOTAL
+==================================================
+
+"SubTotal" corresponde al importe antes de impuestos cuando está explícitamente identificado.
+
+Puede aparecer como:
+
+* SUBTOTAL
+* SUB TOTAL
+* OP. GRAVADAS
+* OPERACIONES GRAVADAS
+* BASE IMPONIBLE
+
+No asumas que una suma de artículos es el subtotal.
+
+Si no aparece claramente:
+null
+
+==================================================
+10. IGV
+==================================================
+
+"IGV" corresponde al impuesto explícitamente mostrado.
+
+Puede aparecer como:
+
+* IGV
+* I.G.V.
+* IGV 18%
+* Impuesto
+
+No calcules el IGV simplemente aplicando 18%.
+
+Si el comprobante no muestra un importe de IGV:
+null
+
+==================================================
+11. TOTAL
+==================================================
+
+"Total" corresponde al importe final que debe pagarse o que fue pagado.
+
+Puede aparecer como:
+
+* TOTAL
+* TOTAL VENTA
+* IMPORTE TOTAL
+* TOTAL A PAGAR
+* TOTAL PAGADO
+
+Prioridad:
+
+1. Total explícitamente mostrado.
+2. Si no existe un total explícito y existen SubTotal + IGV claramente identificados, puede calcularse SubTotal + IGV.
+3. Si ninguno de los anteriores es posible:
+null
+
+Nunca sustituyas un total ilegible por una estimación.
+
+==================================================
+12. MEDIO DE PAGO
+==================================================
+
+Valores permitidos:
+
+"yape"
+"transferencia"
+"efectivo"
+"tarjeta"
+"otro"
+""
+
+Factura/boleta:
+
+* Solo identifica el medio de pago si existe evidencia explícita.
+
+Yape:
+
+* Usa "yape" si existe evidencia clara de que es un pago mediante Yape.
+
+Transferencia:
+
+* Usa "transferencia" si existe evidencia clara de una transferencia bancaria.
+
+Tarjeta:
+
+* Usa "tarjeta" si existe evidencia explícita de pago con tarjeta.
+
+Efectivo:
+
+* Usa "efectivo" si aparece explícitamente.
+
+Si no hay evidencia:
+""
+
+Nunca deduzcas el medio de pago únicamente por el tipo de documento.
+
+==================================================
+13. NÚMERO DE OPERACIÓN
+==================================================
+
+"NumeroOperacion" corresponde exclusivamente al identificador de una operación de pago.
+
+Puede aparecer como:
+
+* N° de operación
+* Número de operación
+* Operación
+* N° transacción
+* ID de transacción
+
+No confundas este campo con:
+
+* número de factura
+* RUC
+* DNI
+* código QR
+* código de autorización de comprobante
+
+Si no aparece:
+""
+
+==================================================
+14. DOCUMENTOS DE YAPE
+==================================================
+
+Si el documento corresponde a Yape:
+
+* Identifica como Empresa al destinatario del pago.
+* No uses el nombre del remitente.
+* No uses encabezados decorativos como Empresa.
+* Si el destinatario aparece parcialmente oculto con "*", conserva exactamente lo visible.
+* El nombre del destinatario NO debe convertirse en un artículo.
+* NumeroOperacion debe contener el número de operación si aparece.
+* MedioPago debe ser "yape".
+
+==================================================
+15. CONFIANZA
+==================================================
+
+"Confianza" representa la confianza GLOBAL en la extracción, no la calidad de un único campo.
+
+"alta":
+
+* Total claramente identificable.
+* Empresa o Fecha claramente identificable.
+* Los campos principales no presentan ambigüedades relevantes.
+* No fue necesario adivinar datos.
+
+"media":
+
+* El Total es razonablemente claro, pero uno o más campos importantes son ambiguos o faltantes.
+* Existe alguna inferencia limitada permitida por las reglas.
+* Hay problemas moderados de OCR.
+
+"baja":
+
+* El Total es ilegible, contradictorio o ambiguo.
+* Existen múltiples interpretaciones posibles.
+* El documento tiene mala calidad y afecta varios campos.
+* Sería necesario adivinar información importante.
+
+Nunca uses "alta" simplemente porque el documento parece legible.
+
+==================================================
+16. REGLA ESPECIAL CONTRA INVENCIONES
+==================================================
+
+Antes de devolver el JSON, verifica mentalmente cada campo:
+
+"¿Puedo señalar evidencia concreta en el texto para este valor?"
+
+Si la respuesta es NO:
+
+* string → ""
+* number → null
+
+No inventes valores para completar el esquema.
+
+==================================================
+17. FORMATO DE RESPUESTA
+==================================================
+
+Devuelve ÚNICAMENTE JSON válido, siempre en español.
+
+No utilices:
+
+* Markdown
+* comentarios
+* explicaciones
+* texto antes del JSON
+* texto después del JSON
+
+El JSON debe cumplir exactamente esta estructura:
+
+{
+"Fecha": "string",
+"Empresa": "string",
+"RUC": "string",
+"NumeroFactura": "string",
+"Articulos": [
+{
+"Descripcion": "string",
+"Cantidad": "number|null",
+"PrecioUnitario": "number|null",
+"Importe": "number|null"
+}
+],
+"SubTotal": "number|null",
+"IGV": "number|null",
+"Total": "number|null",
+"MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
+"NumeroOperacion": "string",
+"Confianza": "alta|media|baja"
 }`;
-
-const REGLAS_CONFIANZA = `Reglas para "Confianza" (qué tan seguro estás de la extracción):
-- "alta": el monto Total es claro y no ambiguo, y al menos la Empresa o la Fecha también son claras. No hubo que adivinar ni inferir nada importante.
-- "media": el Total es claro, pero falta o es ambigua Empresa, Fecha, o el desglose de articulos; o tuviste que inferir/calcular algún dato en vez de leerlo directamente.
-- "baja": el Total es dudoso, ilegible, contradictorio, o tuviste que inventarlo/estimarlo; o la imagen/audio es de mala calidad y no estás seguro de casi nada.`;
-
-// Prompt para texto que viene de una FACTURA/RECIBO tabular (foto, PDF, doc).
-const SYSTEM_PROMPT_EXTRACCION_FACTURA = `Eres un asistente experto en extraer toda la informacion relevante de facturas o recibos de compra ya transcritos.
-
-Extrae cada articulo o servicio de forma individual dentro del arreglo "Articulos". Para cada articulo incluye: "Descripcion", "Cantidad", "PrecioUnitario" (precio por unidad) e "Importe" (total de esa linea).
-
-Reglas para "Cantidad" y "Descripcion":
-- Si el articulo se mide por peso o volumen (kg, g, gr, gramos, litros, l, ml), NO pongas ese numero en "Cantidad". En su lugar, incluye la cantidad y su unidad dentro de "Descripcion", por ejemplo: "Tomate (3 kg)", "Queso (5 g)", "Aceite (2 litros)". Deja "Cantidad" como null en estos casos.
-- Si el articulo se cuenta por unidades enteras (ej. "2 panes", "3 botellas", "1 factura de servicio"), pon ese numero en "Cantidad" como entero, y NO lo repitas dentro de "Descripcion".
-- Si no se menciona ninguna cantidad, deja "Cantidad" como null (no inventes un 1).
-
-Reglas para precios:
-- "Importe" es siempre el total pagado por esa linea, tal como aparece en la factura.
-- "PrecioUnitario" es el precio por unidad, solo aplica cuando "Cantidad" es un numero de unidades enteras. Si el articulo se mide por peso/volumen, deja "PrecioUnitario" como null (el precio ya está reflejado en "Importe").
-- Si la factura no muestra precio unitario pero si el importe de la linea, deja "PrecioUnitario" igual al "Importe" cuando la cantidad sea 1.
-
-Reglas para SubTotal, IGV y Total:
-- "SubTotal" es el importe antes de impuestos (a veces aparece como "OP. GRAVADAS", "GRAVADA" o "SUB TOTAL"). Si no aparece explicito, deja null.
-- "IGV" es el impuesto (18% en Peru; puede aparecer como "I.G.V.", "IGV 18%"). Si la factura no muestra IGV, deja null (no asumas que es 0).
-- "Total" es el importe final a pagar (a veces "TOTAL VENTA" o "TOTAL"). Si no aparece, sumalo de SubTotal + IGV cuando ambos existan.
-- Si la factura no distingue SubTotal/IGV y solo muestra un monto final, pon ese monto en "Total" y deja "SubTotal" e "IGV" como null.
-
-Otras reglas:
-- "Empresa" es el nombre de la empresa que emite la factura. Si no aparece, deja el campo como cadena vacia "".
-- CASO CAPTURA DE YAPE/TRANSFERENCIA: en estas capturas suele aparecer más de un nombre de persona en la imagen (por ejemplo un encabezado grande decorativo, y también el nombre del destinatario real de la plata). El nombre correcto para "Empresa" es el DESTINATARIO del pago (a quién se le pagó), NO el encabezado decorativo ni el nombre del titular de la cuenta que envía. Una pista fuerte: el nombre del destinatario en Yape casi siempre aparece parcialmente enmascarado con un asterisco por privacidad (ej. "Julio Esq*", "Mar** Lóp*") -- si ves un nombre con asterisco al final, ESE es el destinatario correcto para "Empresa", incluso si hay otro nombre más grande o más prominente en la imagen. Ese nombre enmascarado NUNCA debe ir dentro de "Articulos" como si fuera un producto: es el nombre de la empresa/persona, va en "Empresa".
-- "RUC" es el numero de RUC de la empresa emisora (11 digitos en Peru, suele aparecer junto o debajo del nombre de la empresa, a veces precedido por "RUC:"). Si no aparece o no es legible, deja el campo como cadena vacia "".
-- "NumeroFactura" es el numero o identificador de la factura. Si no aparece, deja "".
-
-Reglas para "MedioPago" y "NumeroOperacion":
-- Esta imagen puede ser una FACTURA/BOLETA (documento de compra) o una CAPTURA DE PAGO (Yape, transferencia bancaria u otro comprobante de pago). Identifica cuál es.
-- Si es una captura de Yape (encabezado tipo "Yapeaste a...", logo morado de Yape, "N° de operación"), pon "MedioPago": "yape".
-- Si es una captura de transferencia bancaria (logo de un banco, "N° de operación" u "operación exitosa", cuenta origen/destino), pon "MedioPago": "transferencia".
-- Si la factura/boleta indica explícitamente que se pagó en efectivo o con tarjeta, usa "efectivo" o "tarjeta" segun corresponda.
-- Si es una factura/boleta normal que NO trae ninguna indicación de cómo se pagó, deja "MedioPago" como "" (cadena vacia). No asumas Yape ni ningún otro medio si no hay evidencia clara en la imagen.
-- "NumeroOperacion" es el número de operación/transacción que suelen mostrar las capturas de Yape o transferencia. Si no aparece, deja "".
-
-${REGLAS_CONFIANZA}
-
-Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un objeto JSON valido, sin texto adicional, sin markdown, que cumpla este schema:
-
-${JSON_SCHEMA}`;
 
 // Variante de SYSTEM_PROMPT_EXTRACCION_FACTURA para leer DIRECTO desde la
 // imagen/documento en una sola llamada a Gemini, en vez de transcribir texto
 // primero y extraer después (dos llamadas). Mismas reglas de extracción,
 // solo cambia la fuente (imagen adjunta en vez de texto ya transcrito) --
-// ver GeminiService.extraerFacturaDeImagen.
+// DEPRECADO para el flujo normal, ver nota en extraerFacturaDeImagen.
 const SYSTEM_PROMPT_EXTRACCION_FACTURA_IMAGEN = SYSTEM_PROMPT_EXTRACCION_FACTURA.replace(
-    'Eres un asistente experto en extraer toda la informacion relevante de facturas o recibos de compra ya transcritos.',
-    'Eres un asistente experto en leer facturas o recibos de compra directamente desde la imagen o documento adjunto (no viene texto ya transcrito: léelo tú mismo de la imagen), y extraer toda la informacion relevante.',
+    'Eres un sistema de extracción estructurada especializado en comprobantes de pago de Perú.\n\nTu tarea es convertir el texto OCR proporcionado en un objeto JSON estructurado.',
+    'Eres un sistema de extracción estructurada especializado en comprobantes de pago de Perú. Vas a leer DIRECTO desde la imagen o documento adjunto (no viene texto ya transcrito: léelo tú mismo de la imagen).\n\nTu tarea es convertir lo que veas en el archivo adjunto en un objeto JSON estructurado.',
 );
 
 // Prompt para texto que viene de un AUDIO (persona describiendo una compra en voz alta).
-const SYSTEM_PROMPT_EXTRACCION_AUDIO = `Eres un asistente experto en extraer informacion de gastos a partir de la transcripcion de un audio donde una persona describe, hablando de forma libre y coloquial, una compra o gasto que hizo. NO es una factura escaneada: es lenguaje natural, puede tener muletillas, montos redondeados o aproximados, y datos incompletos.
+const SYSTEM_PROMPT_EXTRACCION_AUDIO = `Eres un sistema de extracción estructurada de gastos a partir de transcripciones de audio.
 
-Extrae cada articulo o servicio mencionado dentro del arreglo "Articulos". Para cada uno incluye: "Descripcion", "Cantidad", "PrecioUnitario" e "Importe".
+La entrada es una transcripción de una persona describiendo verbalmente una compra, gasto o pago.
 
-Reglas para "Cantidad" y "Descripcion":
-- Si la persona menciona un peso o volumen (kg, g, gramos, litros, ml), NO lo pongas en "Cantidad": inclúyelo dentro de "Descripcion", ej. "Tomate (3 kg)". Deja "Cantidad" como null en estos casos.
-- Si menciona unidades enteras (ej. "dos panes", "tres botellas"), conviértelo a numero en "Cantidad" y no lo repitas en "Descripcion".
-- Si no menciona cantidad, deja "Cantidad" como null (no inventes un 1).
-- Si la persona menciona una sola compra sin desglose de articulos (ej. "gasté 50 soles en gasolina"), crea un unico articulo con esa descripcion general.
+La persona puede hablar de forma informal, repetir palabras, utilizar muletillas, corregirse, redondear montos o proporcionar información incompleta.
 
-Reglas para precios:
-- "Importe" es el monto que la persona dijo haber pagado por ese articulo o por el gasto en general.
-- "PrecioUnitario" solo aplica si la persona da un precio por unidad explicito y "Cantidad" es un numero entero; si no, deja null.
-- Los montos hablados suelen ser aproximados: transcribe el numero tal como lo dice la persona, sin inventar decimales.
+Tu tarea es convertir únicamente la información expresada en la transcripción en un objeto JSON estructurado.
 
-Reglas para SubTotal, IGV y Total:
-- Un audio casi nunca desglosa impuestos: deja "SubTotal" e "IGV" como null salvo que la persona los mencione explicitamente.
-- "Total" es el monto total del gasto. Si hay varios articulos y la persona no dio un total explicito, sumalos tu.
+REGLA PRINCIPAL:
+NO INVENTES información que la persona no haya dicho.
 
-Otras reglas:
-- "Empresa" es el nombre del negocio o proveedor si la persona lo menciona (ej. "en el grifo Primax", "en la ferreteria de la esquina"). Si no lo menciona, deja "".
-- "RUC" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de RUC.
-- "NumeroFactura" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de comprobante.
-- "Fecha": si la persona menciona cuándo fue el gasto (ej. "ayer", "el lunes"), intenta inferir la fecha; si no dice nada, deja el campo vacio.
-- "MedioPago": si la persona menciona explícitamente cómo pagó ("le yapeé", "pagué con tarjeta", "transferí", "en efectivo"), usa "yape" | "transferencia" | "tarjeta" | "efectivo" segun corresponda. Si no lo menciona, deja "" (no asumas).
-- "NumeroOperacion" casi nunca aplica en un audio: deja "" salvo que la persona diga explicitamente un numero de operación.
+==================================================
+1. ARTÍCULOS
+==================================================
 
-${REGLAS_CONFIANZA}
-En un audio es normal que la confianza rara vez sea "alta" (el usuario habla de forma aproximada): úsala solo si dio un monto y un articulo claros y sin ambigüedad.
+Extrae cada producto o servicio mencionado.
 
-Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un objeto JSON valido, sin texto adicional, sin markdown, que cumpla este schema:
+Ejemplo:
+"Compré dos gaseosas a cinco soles cada una y un pan de tres soles"
 
-${JSON_SCHEMA}`;
+Debe producir:
+
+* Gaseosa → Cantidad 2 → PrecioUnitario 5
+* Pan → Cantidad null → PrecioUnitario null o 3 si la persona indicó explícitamente que 3 soles corresponde a una unidad.
+
+No agregues productos que la persona no mencione.
+
+Si la persona describe solamente un gasto general:
+
+"gasté 50 soles en gasolina"
+
+crea:
+
+Descripcion: "Gasolina"
+Cantidad: null
+PrecioUnitario: null
+Importe: 50
+
+==================================================
+2. CANTIDAD
+==================================================
+
+Unidades enteras:
+
+* "dos panes" → 2
+* "tres botellas" → 3
+* "compré cinco" → 5 si el contexto permite identificar qué compró.
+
+Peso o volumen:
+
+* "tres kilos de arroz"
+→ Cantidad: null
+→ Descripcion: "Arroz (3 kg)"
+
+No conviertas kg, gramos, litros o ml en Cantidad.
+
+Si la cantidad no fue mencionada:
+null
+
+Nunca asumas cantidad = 1.
+
+==================================================
+3. PRECIOS
+==================================================
+
+Extrae los precios únicamente cuando la persona los haya mencionado.
+
+PrecioUnitario:
+Solo úsalo cuando la persona indique claramente un precio por unidad.
+
+Ejemplo:
+"compré 3 gaseosas a 4 soles cada una"
+
+Cantidad = 3
+PrecioUnitario = 4
+
+Importe:
+Usa el monto que la persona indique como pagado para ese artículo o gasto.
+
+No calcules un precio unitario a partir del importe.
+
+==================================================
+4. TOTAL
+==================================================
+
+Si la persona dice explícitamente el total:
+utiliza ese total.
+
+Ejemplo:
+"compré varias cosas y gasté 120 soles"
+→ Total = 120
+
+Si proporciona varios importes individuales pero no menciona un total:
+puedes calcular el total sumando los importes claramente expresados.
+
+No hagas cálculos si alguno de los valores necesarios es ambiguo.
+
+==================================================
+5. FECHA
+==================================================
+
+Si la persona menciona una fecha explícita, extráela.
+
+Si utiliza expresiones relativas como:
+
+* ayer
+* anteayer
+* el lunes
+* la semana pasada
+
+puedes convertirlas a una fecha únicamente si el contexto temporal de referencia está disponible.
+
+Si no existe suficiente información para determinar una fecha:
+"Fecha": ""
+
+Nunca uses la fecha actual como sustituto.
+
+==================================================
+6. EMPRESA
+==================================================
+
+"Empresa" es el negocio, establecimiento o proveedor mencionado.
+
+Ejemplos:
+"compré en Primax"
+→ Empresa: "Primax"
+
+"fui a la ferretería de la esquina"
+→ Empresa: "ferretería de la esquina"
+
+Si no se menciona:
+""
+
+No inventes el nombre real de un negocio a partir de una descripción genérica.
+
+==================================================
+7. RUC Y COMPROBANTE
+==================================================
+
+Extrae RUC solamente si la persona lo menciona explícitamente.
+
+Extrae NumeroFactura solamente si la persona menciona explícitamente el número del comprobante.
+
+En caso contrario:
+"RUC": ""
+"NumeroFactura": ""
+
+==================================================
+8. MEDIO DE PAGO
+==================================================
+
+Valores permitidos:
+
+"yape"
+"transferencia"
+"efectivo"
+"tarjeta"
+"otro"
+""
+
+Ejemplos:
+
+"le hice un yape"
+→ yape
+
+"transferí desde mi banco"
+→ transferencia
+
+"pagué con tarjeta"
+→ tarjeta
+
+"pagué en efectivo"
+→ efectivo
+
+Si no se menciona:
+""
+
+No infieras el medio de pago.
+
+==================================================
+9. NÚMERO DE OPERACIÓN
+==================================================
+
+Extrae NumeroOperacion únicamente si la persona menciona explícitamente un número de operación o transacción.
+
+Si no:
+""
+
+==================================================
+10. IGV Y SUBTOTAL
+==================================================
+
+Normalmente un audio no proporciona esta información.
+
+Solo extrae SubTotal o IGV si la persona los menciona explícitamente.
+
+No calcules IGV aplicando 18%.
+
+Si no se menciona:
+null
+
+==================================================
+11. CORRECCIONES DURANTE EL HABLA
+==================================================
+
+Si la persona se corrige:
+
+"gasté 50... bueno, 55 soles"
+
+usa 55 como valor final expresado por la persona.
+
+Si la corrección no es clara:
+
+"creo que fueron 50 o 55"
+
+no elijas arbitrariamente.
+
+Usa null cuando corresponda y reduce la confianza.
+
+==================================================
+12. CONFIANZA
+==================================================
+
+"alta":
+
+* El gasto y el monto están claramente expresados.
+* No existen contradicciones.
+* El artículo o concepto es claro.
+
+"media":
+
+* El gasto puede identificarse, pero existen datos faltantes o alguna ambigüedad menor.
+
+"baja":
+
+* El monto es ambiguo.
+* La persona se contradice.
+* La transcripción es confusa.
+* No es posible determinar con seguridad qué se compró o cuánto se pagó.
+
+==================================================
+13. FORMATO
+==================================================
+
+Devuelve únicamente JSON válido, siempre en español.
+
+Sin Markdown.
+Sin explicaciones.
+Sin comentarios.
+
+Estructura:
+
+{
+"Fecha": "string",
+"Empresa": "string",
+"RUC": "string",
+"NumeroFactura": "string",
+"Articulos": [
+{
+"Descripcion": "string",
+"Cantidad": "number|null",
+"PrecioUnitario": "number|null",
+"Importe": "number|null"
+}
+],
+"SubTotal": "number|null",
+"IGV": "number|null",
+"Total": "number|null",
+"MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
+"NumeroOperacion": "string",
+"Confianza": "alta|media|baja"
+}`;
 
 export interface FacturaExtraida {
     Fecha?: string;
