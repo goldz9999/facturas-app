@@ -377,6 +377,7 @@ export class FacturasService {
         if (!esAudio && montoDetectado > 0) {
           const duplicadoPropio = await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(
             usuarioId,
+            gastoId,
             datosComprobante.numero,
             factura.ruc || null,
             datosPago?.numero_operacion || null,

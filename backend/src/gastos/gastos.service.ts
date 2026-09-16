@@ -600,6 +600,7 @@ export class GastosService {
     // en su negocio.
     async buscarPosibleDuplicadoDelMismoUsuario(
         usuarioId: number,
+        gastoIdActual: number,
         numeroComprobante?: string | null,
         ruc?: string | null,
         numeroOperacion?: string | null,
@@ -611,6 +612,12 @@ export class GastosService {
             .from('gastos')
             .select('*, comprobantes(*), proveedores(ruc), pagos(numero_operacion)')
             .eq('usuario_id', usuarioId)
+            // Excluye el gasto que se acaba de crear: buscarPosibleDuplicadoDelMismoUsuario
+            // se llama justo después de crear el gasto nuevo (ver facturas.service.ts),
+            // así que sin este filtro el propio registro recién insertado aparecía
+            // primero (order by creado_en desc) y matcheaba consigo mismo -- un gasto
+            // quedaba marcado como "posible duplicado" de sí mismo.
+            .neq('id', gastoIdActual)
             .order('creado_en', { ascending: false })
             .limit(50);
 
@@ -1103,6 +1110,36 @@ export class GastosService {
             throw new InternalServerErrorException(`Error resolviendo el nombre del usuario: ${error.message}`);
         }
         return data?.nombre ?? null;
+    }
+
+    // Botón "X" (rechazar) de ReviewInbox.jsx: antes no hacía nada porque no
+    // existía ningún endpoint pensado para descartar un gasto capturado por
+    // error (a diferencia de un duplicado, que sí se resuelve sin borrar
+    // nada vía confirmar/descartar-duplicado). Acá se borra el gasto y sus
+    // filas hijas (comprobante + items, pagos, evidencias) para que no quede
+    // basura huérfana en esas tablas.
+    async rechazar(gastoId: number) {
+        await this.obtenerPorId(gastoId); // 404 si no existe
+
+        const client = this.supabase.getClient();
+
+        const { data: comprobantes } = await client
+            .from('comprobantes')
+            .select('id')
+            .eq('gasto_id', gastoId);
+        const comprobanteIds = (comprobantes ?? []).map((c: any) => c.id);
+        if (comprobanteIds.length > 0) {
+            await client.from('comprobante_items').delete().in('comprobante_id', comprobanteIds);
+        }
+        await client.from('comprobantes').delete().eq('gasto_id', gastoId);
+        await client.from('pagos').delete().eq('gasto_id', gastoId);
+        await client.from('evidencias').delete().eq('gasto_id', gastoId);
+
+        const { error } = await client.from('gastos').delete().eq('id', gastoId);
+        if (error) {
+            throw new InternalServerErrorException(`Error rechazando el gasto: ${error.message}`);
+        }
+        return { success: true as const };
     }
 
     private async insertarComprobante(gastoId: number, datos: DatosComprobante) {

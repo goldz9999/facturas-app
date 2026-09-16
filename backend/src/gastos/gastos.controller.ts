@@ -124,6 +124,14 @@ export class GastosController {
         return this.gastosService.descartarDuplicado(id);
     }
 
+    // Botón "X" de ReviewInbox.jsx: el usuario descarta un gasto mal
+    // capturado (no es un duplicado, es basura/error de lectura). Borra el
+    // gasto y sus filas hijas (ver GastosService.rechazar).
+    @Patch(':id/rechazar')
+    async rechazar(@Param('id', ParseIntPipe) id: number) {
+        return this.gastosService.rechazar(id);
+    }
+
     @Post(':id/comprobante')
     async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Request() req) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
