@@ -92,7 +92,8 @@ export interface FiltrosGastos {
     pedidoId?: number;
     medioPago?: string; // 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | otro valor libre en pagos.medio
     pendienteRevision?: boolean;
-    posibleDuplicado?: boolean; // true = solo gastos con posible_duplicado_de seteado
+    posibleDuplicado?: boolean; // true = solo gastos con posible_duplicado_de seteado, aún pendientes de revisión
+    duplicadoConfirmado?: boolean; // true = solo gastos ya confirmados como "es el mismo gasto" (posible_duplicado_de seteado, pendiente_revision=false)
     sinComprobante?: boolean; // true = sin fila en comprobantes; false = con comprobante
     limite?: number; // default 50, tope 200
     offset?: number; // default 0
@@ -779,6 +780,42 @@ export class GastosService {
         this.gateway.notificarCambio(gasto.empresa_id, gastoId, 'actualizado');
         return gasto;
     }
+    // Conteos para las cards resumen de Gastos.jsx (uno por cada chip de
+    // ExpenseFilterBar). Igual que resumen(), se calcula on-the-fly: al
+    // volumen actual de un solo tenant no vale la pena una vista aparte.
+    // Un duplicado ya confirmado ("Es el mismo gasto") NO cuenta en "todos"
+    // ni en el resto de buckets -- mismo criterio de exclusión que listar()
+    // -- solo aparece en su propio conteo, para no inflar los demás.
+    async contarPorEstado(empresaId?: EmpresaFiltro) {
+        const client = this.supabase.getClient();
+        let query = client
+            .from('gastos')
+            .select('id, es_personal, pendiente_revision, posible_duplicado_de, comprobantes(id)');
+        query = aplicarFiltroEmpresa(query, empresaId);
+
+        const { data, error } = await query;
+        if (error) {
+            throw new InternalServerErrorException(`Error contando gastos: ${error.message}`);
+        }
+
+        let todos = 0, empresa = 0, personal = 0, requiereRevision = 0,
+            posibleDuplicado = 0, duplicadoConfirmado = 0, sinComprobante = 0;
+
+        for (const g of (data ?? []) as any[]) {
+            const esDuplicadoConfirmado = g.posible_duplicado_de != null && !g.pendiente_revision;
+            if (esDuplicadoConfirmado) {
+                duplicadoConfirmado++;
+                continue;
+            }
+            todos++;
+            if (g.es_personal) personal++; else empresa++;
+            if (g.pendiente_revision) requiereRevision++;
+            if (g.posible_duplicado_de != null) posibleDuplicado++;
+            if (!g.comprobantes || g.comprobantes.length === 0) sinComprobante++;
+        }
+
+        return { todos, empresa, personal, requiereRevision, posibleDuplicado, duplicadoConfirmado, sinComprobante };
+    }
 
     // Lista de gastos con filtros (sección 24 de requerimientos: día/semana/mes,
     // personal/empresarial, por categoría/proveedor/usuario/proyecto/medio de
@@ -826,7 +863,23 @@ export class GastosService {
         if (filtros.usuarioId !== undefined) query = query.eq('usuario_id', filtros.usuarioId);
         if (filtros.pedidoId !== undefined) query = query.eq('pedido_id', filtros.pedidoId);
         if (filtros.pendienteRevision !== undefined) query = query.eq('pendiente_revision', filtros.pendienteRevision);
-        if (filtros.posibleDuplicado) query = query.not('posible_duplicado_de', 'is', null);
+
+        // Un duplicado confirmado ("Es el mismo gasto") deja posible_duplicado_de
+        // seteado para siempre (trazabilidad), solo apaga pendiente_revision -- así
+        // que hay que distinguir "todavía por revisar" de "ya confirmado" con las
+        // dos columnas juntas, no solo con posible_duplicado_de.
+        if (filtros.duplicadoConfirmado) {
+            query = query.not('posible_duplicado_de', 'is', null).eq('pendiente_revision', false);
+        } else if (filtros.posibleDuplicado) {
+            query = query.not('posible_duplicado_de', 'is', null).eq('pendiente_revision', true);
+        } else {
+            // "Todos" y el resto de filtros: no mostrar duplicados ya confirmados
+            // mezclados con gastos reales -- tienen su propio tab
+            // ("Duplicado Confirmado"). Sin esto, un gasto que ya se marcó como
+            // "el mismo gasto que otro" seguía apareciendo como fila normal
+            // (con badge "Aprobado") en Gastos y sumando dos veces en el Dashboard.
+            query = query.or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
+        }
 
         // Se pide una página más grande cuando hay filtro de medio de pago o
         // "sin comprobante", porque el filtro real se aplica después de
@@ -898,7 +951,10 @@ export class GastosService {
         let queryMes = client
             .from('gastos')
             .select('monto, fecha, es_personal, categoria_id, proveedor_id, categorias(nombre), proveedores(nombre)')
-            .gte('fecha', inicioMesStr);
+            .gte('fecha', inicioMesStr)
+            // Mismo criterio que listar(): un duplicado ya confirmado no debe
+            // sumarse dos veces a los totales del Dashboard.
+            .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
         queryMes = aplicarFiltroEmpresa(queryMes, empresaId);
 
         const { data: gastosMes, error: errorMes } = await queryMes;
@@ -940,12 +996,46 @@ export class GastosService {
             .sort((a, b) => b.cantidad - a.cantidad)
             .slice(0, 4);
 
+        // Tendencia de los últimos 14 días (para el gráfico de línea del
+        // Dashboard) -- a propósito una ventana móvil, no el mes calendario:
+        // así no se "vacía" de golpe cuando el mes cambia de página, como sí
+        // le pasa a `month` de arriba. Mismo criterio de exclusión de
+        // duplicados confirmados que `queryMes`.
+        const diasVentana = 14;
+        const inicioVentana = new Date(hoy);
+        inicioVentana.setDate(hoy.getDate() - (diasVentana - 1));
+        const inicioVentanaStr = inicioVentana.toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
+
+        let queryVentana = client
+            .from('gastos')
+            .select('monto, fecha')
+            .gte('fecha', inicioVentanaStr)
+            .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
+        queryVentana = aplicarFiltroEmpresa(queryVentana, empresaId);
+
+        const { data: gastosVentana, error: errorVentana } = await queryVentana;
+        if (errorVentana) {
+            throw new InternalServerErrorException(`Error calculando la tendencia: ${errorVentana.message}`);
+        }
+
+        const totalesPorDia = new Map<string, number>();
+        for (let i = 0; i < diasVentana; i++) {
+            const d = new Date(inicioVentana);
+            d.setDate(inicioVentana.getDate() + i);
+            totalesPorDia.set(d.toLocaleDateString('en-CA', { timeZone: 'America/Lima' }), 0);
+        }
+        for (const g of gastosVentana ?? []) {
+            const actual = totalesPorDia.get(g.fecha) ?? 0;
+            totalesPorDia.set(g.fecha, actual + (Number(g.monto) || 0));
+        }
+        const tendenciaDiaria = [...totalesPorDia.entries()].map(([fecha, total]) => ({ fecha, total }));
+
         // Últimos 5 gastos, mismo formato que GET /gastos (relaciones
         // completas) para que el frontend pueda reusar mapearGasto/ExpenseTable
         // sin traducir dos veces.
         const recientes = await this.listar({ limite: 5 }, empresaId);
 
-        return { today, week, month, company, personal, topCategorias, topProveedores, recientes };
+        return { today, week, month, company, personal, topCategorias, topProveedores, recientes, tendenciaDiaria };
     }
 
     // empresaId: si viene definido, el gasto debe pertenecer a esa empresa
