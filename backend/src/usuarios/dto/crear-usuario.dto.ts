@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsArray, IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class CrearUsuarioDto {
     // Opcional: un usuario puede crearse desde el panel web sin tener aún
@@ -20,14 +20,21 @@ export class CrearUsuarioDto {
     @IsOptional()
     activo?: boolean;
 
-    // Opcional: mientras solo exista una empresa, si no se indica se asigna
-    // automáticamente a la empresa por defecto (ver
+    // Paso 33: un usuario puede tener acceso a más de una empresa. Opcional
+    // -- si no se indica ninguna, se asigna a la empresa por defecto (ver
     // EmpresasService.obtenerPorDefecto). Si quien crea el usuario es un
     // admin de empresa (no super_admin), este valor se ignora: el controller
-    // fuerza la empresa del propio admin.
-    @IsNumber()
+    // fuerza [su propia empresa].
+    @IsArray()
+    @IsNumber({}, { each: true })
     @IsOptional()
-    empresa_id?: number;
+    empresa_ids?: number[];
+
+    // Paso 33: si puede registrar gastos personales (además de los de
+    // empresa). true por defecto.
+    @IsBoolean()
+    @IsOptional()
+    puede_registrar_personal?: boolean;
 
     // Credenciales para el login web. Sin password, el usuario solo puede
     // usarse desde Telegram (o queda pendiente de activar su acceso web).

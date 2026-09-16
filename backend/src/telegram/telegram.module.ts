@@ -8,9 +8,18 @@ import { GastosModule } from '../gastos/gastos.module';
 import { CommonModule } from '../common/common.module';
 import { CategoriasModule } from '../categorias/categorias.module';
 import { ProveedoresModule } from '../proveedores/proveedores.module';
+import { EmpresasModule } from '../empresas/empresas.module';
 
 @Module({
-    imports: [FacturasModule, UsuariosModule, GastosModule, CommonModule, CategoriasModule, ProveedoresModule],
+    imports: [
+        FacturasModule,
+        UsuariosModule,
+        GastosModule,
+        CommonModule,
+        CategoriasModule,
+        ProveedoresModule,
+        EmpresasModule,
+    ],
     controllers: [TelegramController],
     providers: [TelegramService, TelegramEstadoService],
 })

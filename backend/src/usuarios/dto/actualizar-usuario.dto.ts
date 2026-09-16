@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsArray, IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class ActualizarUsuarioDto {
     @IsString()
@@ -30,10 +30,17 @@ export class ActualizarUsuarioDto {
     @IsOptional()
     telegram_id?: number;
 
-    // Solo un super_admin puede reasignar la empresa de un usuario; si quien
-    // llama es admin de empresa, el controller ignora este campo y fuerza
-    // su propia empresa (mismo patrón que en CrearUsuarioDto).
-    @IsNumber()
+    // Paso 33: reemplaza por completo la lista de empresas del usuario.
+    // Solo un super_admin puede reasignarla; si quien llama es admin de
+    // empresa, el controller ignora este campo (mismo patrón que en
+    // CrearUsuarioDto).
+    @IsArray()
+    @IsNumber({}, { each: true })
     @IsOptional()
-    empresa_id?: number;
+    empresa_ids?: number[];
+
+    // Paso 33: switch global -- si puede registrar gastos personales.
+    @IsBoolean()
+    @IsOptional()
+    puede_registrar_personal?: boolean;
 }

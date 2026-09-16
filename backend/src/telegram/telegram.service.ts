@@ -6,6 +6,7 @@ import { GastosService } from '../gastos/gastos.service';
 import { TelegramEstadoService } from './telegram-estado.service';
 import { CategoriasService } from '../categorias/categorias.service';
 import { ProveedoresService } from '../proveedores/proveedores.service';
+import { EmpresasService } from '../empresas/empresas.service';
 
 interface TelegramUpdate {
     message?: {
@@ -36,6 +37,7 @@ export class TelegramService {
         private telegramEstado: TelegramEstadoService,
         private categoriasService: CategoriasService,
         private proveedoresService: ProveedoresService,
+        private empresasService: EmpresasService,
     ) {
         this.token = this.config.get<string>('TELEGRAM_BOT_TOKEN');
     }
@@ -187,7 +189,15 @@ export class TelegramService {
             // el mismo !vinculado_a más arriba), así que no hay riesgo de
             // encimar preguntas.
             if (!esAudio && resultado.falta_categoria && !pidioConfianza) {
-                await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                // Igual que en preguntarCategoriaSiFalta: si hay más de una
+                // empresa y quien sube la factura es super_admin, se
+                // pregunta la empresa primero (la categoría depende de
+                // ella) y se retoma la pregunta de categoría cuando
+                // responda el botón "empresa:" (ver manejarCallbackQuery).
+                const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
+                if (!empresaPendiente) {
+                    await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                }
             }
 
             // La heurística de agrupación (facturas.service.ts) decidió que
@@ -283,6 +293,43 @@ export class TelegramService {
         }
     }
 
+    // --- Selección de empresa cuando el usuario tiene acceso a varias (Paso 33) ---
+
+    // Antes (Paso 32) esto solo aplicaba a super_admin, que no tiene
+    // empresa propia y ve "todas". Ahora (Paso 33) un admin/empleado
+    // también puede tener acceso a más de una empresa (usuario_empresas),
+    // así que el criterio pasa a ser simplemente "¿a cuántas empresas
+    // tiene acceso?": si es una sola, se usa esa sin preguntar (mismo
+    // comportamiento de siempre); si son varias, se pregunta con botones
+    // y se corrige el gasto (que se había creado con una por defecto, ver
+    // GastosService.obtenerEmpresaIdDeUsuario). Devuelve true si quedó
+    // pendiente de respuesta, para que el caller no pregunte categoría
+    // todavía (la categoría depende de la empresa).
+    private async preguntarEmpresaSiFalta(
+        chatId: number | string,
+        gastoId: number,
+        usuarioId: number,
+    ): Promise<boolean> {
+        const usuario = await this.usuariosService.obtenerPorId(usuarioId);
+        if (!usuario) return false;
+
+        const empresas =
+            usuario.rol === 'super_admin'
+                ? await this.empresasService.listar()
+                : (await Promise.all(usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)))).filter(
+                    (e): e is NonNullable<typeof e> => e != null,
+                );
+        if (empresas.length <= 1) return false;
+
+        const filas = empresas.map((emp) => [
+            { text: emp.nombre, callback_data: `empresa:${gastoId}:${emp.id}` },
+        ]);
+        await this.enviarMensaje(chatId, '🏢 ¿A qué empresa pertenece este gasto?', {
+            inline_keyboard: filas,
+        });
+        return true;
+    }
+
     // --- Matching de proveedor/categoría (sección 9) ---
 
     // Manda los botones de categoría + tipo de gasto (Personal/Empresa). El
@@ -315,7 +362,14 @@ export class TelegramService {
     // Se llama después de resolver una confirmación/corrección de confianza,
     // igual que preguntarComprobanteSiFalta: si el gasto sigue sin
     // categoría asignada, recién ahí se pregunta.
-    private async preguntarCategoriaSiFalta(chatId: number | string, gastoId: number) {
+    private async preguntarCategoriaSiFalta(chatId: number | string, gastoId: number, usuarioId: number) {
+        // La empresa se pregunta primero porque la lista de categorías
+        // depende de gasto.empresa_id (CategoriasService.listar(empresaId))
+        // -- si queda pendiente, esperamos a la respuesta del callback
+        // "empresa:" antes de preguntar categoría (ver manejarCallbackQuery).
+        const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, usuarioId);
+        if (empresaPendiente) return;
+
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         if (!gasto.categoria_id) {
             await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
@@ -325,12 +379,23 @@ export class TelegramService {
     // Botón "Personal" / "Empresa" para completar la clasificación después
     // de elegir categoría. gastoId, proveedorId y categoriaId viajan en el
     // callback_data para no tener que recordar estado entre pasos.
+    //
+    // Paso 33: si el usuario tiene puede_registrar_personal = false, ni
+    // siquiera se le ofrece el botón "Personal" -- se clasifica directo
+    // como gasto de empresa (finalizarClasificacion), sin preguntar nada.
     private async preguntarTipoGasto(
         chatId: number | string,
         gastoId: number,
         proveedorId: number,
         categoriaId: number,
+        usuarioId: number,
     ) {
+        const usuario = await this.usuariosService.obtenerPorId(usuarioId);
+        if (usuario && !usuario.puede_registrar_personal) {
+            await this.finalizarClasificacion(chatId, gastoId, proveedorId, categoriaId, false);
+            return;
+        }
+
         await this.enviarMensaje(chatId, '¿Es un gasto personal o de la empresa?', {
             inline_keyboard: [
                 [
@@ -345,6 +410,27 @@ export class TelegramService {
                 ],
             ],
         });
+    }
+
+    // Último paso de la clasificación: guarda categoría + tipo de gasto en
+    // el gasto y la sugerencia en el proveedor (aprendizaje progresivo,
+    // sección 9), para que la próxima vez no se pregunte. Extraído a un
+    // método aparte (Paso 33) porque ahora hay dos caminos para llegar
+    // acá: el botón "tipo:" de siempre, o directo desde
+    // preguntarTipoGasto() cuando el usuario tiene puede_registrar_personal
+    // = false (nunca se le pregunta, se asume "empresa").
+    private async finalizarClasificacion(
+        chatId: number | string,
+        gastoId: number,
+        proveedorId: number,
+        categoriaId: number,
+        esPersonal: boolean,
+    ) {
+        await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal, proveedorId);
+        const gastoParaEmpresa = await this.gastosService.obtenerPorId(gastoId);
+        await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal, gastoParaEmpresa.empresa_id);
+
+        await this.enviarMensaje(chatId, '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.');
     }
 
     // --- Heurística de agrupación: confirmación con botones Sí/No ---
@@ -450,7 +536,8 @@ export class TelegramService {
         await this.telegramEstado.limpiar(Number(chatId));
         await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto}.`);
         await this.preguntarComprobanteSiFalta(chatId, gastoId);
-        await this.preguntarCategoriaSiFalta(chatId, gastoId);
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
     }
 
     // --- Flujo 2: comando /gastos -> lista con botón "Agregar comprobante" ---
@@ -515,7 +602,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'empresa'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -555,7 +642,7 @@ export class TelegramService {
                 await this.gastosService.confirmarConfianza(gastoId);
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
                 await this.preguntarComprobanteSiFalta(chatId, gastoId);
-                await this.preguntarCategoriaSiFalta(chatId, gastoId);
+                await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
                 return;
             }
 
@@ -590,6 +677,20 @@ export class TelegramService {
                 return;
             }
 
+            // Respondió a "¿A qué empresa pertenece este gasto?" (Paso 32).
+            // Se corrige el gasto (se había creado con la empresa por
+            // defecto) y recién ahí se retoma la pregunta de categoría, que
+            // depende de la empresa correcta.
+            if (accion === 'empresa') {
+                const empresaId = Number(segundoIdStr);
+                await this.gastosService.actualizarEmpresa(gastoId, empresaId);
+                const gasto = await this.gastosService.obtenerPorId(gastoId);
+                if (!gasto.categoria_id) {
+                    await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
+                }
+                return;
+            }
+
             // Eligió categoría: falta el tipo de gasto (Personal/Empresa)
             // antes de guardar nada, así que se pregunta eso a continuación.
             // proveedorId y categoriaId viajan en el callback_data completo
@@ -601,34 +702,21 @@ export class TelegramService {
                     gastoId,
                     Number(proveedorIdStr),
                     Number(categoriaIdStr),
+                    usuario.id,
                 );
                 return;
             }
 
             // Último paso: ya con categoría + tipo de gasto, se actualiza el
-            // gasto y se guarda la sugerencia en el proveedor (aprendizaje
-            // progresivo, sección 9) para que la próxima vez no se pregunte.
+            // gasto y se guarda la sugerencia en el proveedor.
             if (accion === 'tipo') {
                 const [, , proveedorIdStr, categoriaIdStr, tipo] = data.split(':');
-                const proveedorId = Number(proveedorIdStr);
-                const categoriaId = Number(categoriaIdStr);
-                const esPersonal = tipo === 'personal';
-
-                await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal, proveedorId);
-                // esDuenoDelGasto ya validó este gastoId antes de llegar
-                // acá; se reconsulta solo para leer su empresa_id y que
-                // guardarSugerencia no toque un proveedor de otra empresa.
-                const gastoParaEmpresa = await this.gastosService.obtenerPorId(gastoId);
-                await this.proveedoresService.guardarSugerencia(
-                    proveedorId,
-                    categoriaId,
-                    esPersonal,
-                    gastoParaEmpresa.empresa_id,
-                );
-
-                await this.enviarMensaje(
+                await this.finalizarClasificacion(
                     chatId,
-                    '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.',
+                    gastoId,
+                    Number(proveedorIdStr),
+                    Number(categoriaIdStr),
+                    tipo === 'personal',
                 );
                 return;
             }

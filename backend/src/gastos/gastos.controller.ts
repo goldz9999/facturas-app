@@ -3,6 +3,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiQuery } from '@nestjs/swagger';
 import { GastosService, FiltrosGastos, DatosPago } from './gastos.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { resolverEmpresaIdFiltro } from '../common/resolver-empresa.util';
 
 @UseGuards(JwtAuthGuard)
 @Controller('gastos')
@@ -11,8 +12,9 @@ export class GastosController {
 
     // Lista con filtros (sección 24 de requerimientos: panel de control).
     // super_admin ve de todas las empresas (o filtra por una con
-    // ?empresa_id=); admin/empleado quedan acotados siempre a la suya,
-    // mismo patrón que UsuariosController.listar().
+    // ?empresa_id=); admin/empleado ven mezcladas las empresas a las que
+    // tienen acceso (Paso 33: puede ser más de una), o filtran por una
+    // puntual con ?empresa_id= (ver resolverEmpresaIdFiltro).
     @ApiQuery({ name: 'desde', required: false, description: 'YYYY-MM-DD' })
     @ApiQuery({ name: 'hasta', required: false, description: 'YYYY-MM-DD' })
     @ApiQuery({ name: 'es_personal', required: false, type: Boolean })
@@ -24,7 +26,7 @@ export class GastosController {
     @ApiQuery({ name: 'pendiente_revision', required: false, type: Boolean })
     @ApiQuery({ name: 'posible_duplicado', required: false, type: Boolean })
     @ApiQuery({ name: 'sin_comprobante', required: false, type: Boolean })
-    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Solo super_admin: filtrar por una empresa específica' })
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
     @ApiQuery({ name: 'limite', required: false, type: Number })
     @ApiQuery({ name: 'offset', required: false, type: Number })
     @Get()
@@ -48,8 +50,7 @@ export class GastosController {
             offset: aNumero(q.offset),
         };
 
-        // super_admin: sin acotar, salvo que pida una empresa puntual por query.
-        const empresaId = req.user.rol === 'super_admin' ? aNumero(q.empresa_id) : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req, q.empresa_id);
         return this.gastosService.listar(filtros, empresaId);
     }
 
@@ -67,18 +68,16 @@ export class GastosController {
     // categorías/proveedores, últimos gastos). Debe declararse antes de
     // GET ':id' -- si no, Nest interpreta "resumen" como un :id numérico
     // que ParseIntPipe rechaza con 400 antes de llegar acá.
-    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Solo super_admin: filtrar por una empresa específica' })
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
     @Get('resumen')
-    async resumen(@Query('empresa_id') empresaId: string | undefined, @Request() req) {
-        const id = req.user.rol === 'super_admin'
-            ? (empresaId !== undefined ? Number(empresaId) : undefined)
-            : req.user.empresa_id;
-        return this.gastosService.resumen(id);
+    async resumen(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.resumen(empresaId);
     }
 
     @Get(':id')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req);
         return this.gastosService.obtenerPorId(id, empresaId);
     }
 
@@ -95,7 +94,7 @@ export class GastosController {
         },
         @Request() req,
     ) {
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req);
         return this.gastosService.actualizar(id, body, empresaId);
     }
 
@@ -128,7 +127,7 @@ export class GastosController {
     @Post(':id/comprobante')
     async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Request() req) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req);
         return this.gastosService.adjuntarComprobante(id, body, undefined, undefined, undefined, empresaId);
     }
 
@@ -137,7 +136,7 @@ export class GastosController {
     // DatosPago); numero_operacion y monto son opcionales.
     @Post(':id/pago')
     async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago, @Request() req) {
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req);
         return this.gastosService.insertarPago(id, body, empresaId);
     }
 
@@ -153,7 +152,7 @@ export class GastosController {
         @Request() req,
     ) {
         if (!file) throw new BadRequestException('No se recibió ningún archivo.');
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_id;
+        const empresaId = resolverEmpresaIdFiltro(req);
         return this.gastosService.subirEvidenciaImagen(id, file, empresaId);
     }
 }

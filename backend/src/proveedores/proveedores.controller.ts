@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Get, Param, Patch, Query, Reques
 import { ApiQuery } from '@nestjs/swagger';
 import { ProveedoresService } from './proveedores.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { resolverEmpresaId } from '../common/resolver-empresa.util';
 
 // GET es de solo lectura (los proveedores se crean desde el flujo de
 // Telegram vía ProveedoresService.buscarOCrear, no desde el panel web).
@@ -15,27 +16,15 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 export class ProveedoresController {
     constructor(private proveedoresService: ProveedoresService) { }
 
-    // Mismo criterio que CategoriasController: admin/empleado quedan
-    // acotados a su empresa (desde el JWT); super_admin no tiene empresa
-    // propia y debe indicar una explícitamente, porque un catálogo de
-    // proveedores mezclando varias empresas no es un caso de uso real.
-    private resolverEmpresaId(req: any, empresaIdQuery?: string): number {
-        if (req.user.rol !== 'super_admin') {
-            return req.user.empresa_id;
-        }
-        const id = empresaIdQuery ? Number(empresaIdQuery) : undefined;
-        if (!id) {
-            throw new BadRequestException(
-                'Como super_admin, indica ?empresa_id= para ver proveedores de una empresa.',
-            );
-        }
-        return id;
-    }
+    // Resuelve la empresa (ver common/resolver-empresa.util.ts). Mismo
+    // criterio que CategoriasController: un catálogo de proveedores
+    // mezclando varias empresas no es un caso de uso real, así que si el
+    // usuario tiene acceso a más de una (Paso 33) debe indicar cuál.
 
-    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Solo super_admin: obligatorio' })
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
     @Get()
     async listar(@Query('empresa_id') empresaIdQuery: string, @Request() req) {
-        return this.proveedoresService.listar(this.resolverEmpresaId(req, empresaIdQuery));
+        return this.proveedoresService.listar(resolverEmpresaId(req, empresaIdQuery));
     }
 
     // Guarda la "regla de clasificación aprendida" desde el panel web
@@ -48,7 +37,7 @@ export class ProveedoresController {
     // criterio de aislamiento multiempresa que el resto del controller: si
     // el proveedor no es de esa empresa, guardarSugerencia() no actualiza
     // ninguna fila (el .eq('empresa_id', ...) del UPDATE no matchea).
-    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Solo super_admin: obligatorio' })
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
     @Patch(':id')
     async actualizar(
         @Param('id') id: string,
@@ -56,7 +45,7 @@ export class ProveedoresController {
         @Query('empresa_id') empresaIdQuery: string,
         @Request() req,
     ) {
-        const empresaId = this.resolverEmpresaId(req, empresaIdQuery);
+        const empresaId = resolverEmpresaId(req, empresaIdQuery);
         if (body.categoria_id === undefined || body.es_personal === undefined) {
             throw new BadRequestException('Faltan categoria_id y/o es_personal en el body.');
         }

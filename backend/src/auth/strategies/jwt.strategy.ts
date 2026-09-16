@@ -13,13 +13,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         });
     }
 
-    async validate(payload: { sub: number; email: string; rol: string; empresa_id: number | null }) {
+    async validate(payload: {
+        sub: number;
+        email: string;
+        rol: string;
+        empresa_ids: number[];
+        puede_registrar_personal: boolean;
+    }) {
         // Lo que retorna aquí queda disponible como req.user en los controllers.
         return {
             id: payload.sub,
             email: payload.email,
             rol: payload.rol,
-            empresa_id: payload.empresa_id,
+            empresa_ids: payload.empresa_ids ?? [],
+            puede_registrar_personal: payload.puede_registrar_personal,
         };
     }
 }

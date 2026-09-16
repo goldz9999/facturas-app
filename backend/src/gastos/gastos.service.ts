@@ -9,6 +9,28 @@ import { convertirImagenAWebp } from '../facturas/imagen.util';
 // falta: convertirImagenAWebp es una función pura, sin DI de por medio.
 const BUCKET = 'Facturas';
 
+// Paso 33: un usuario puede tener acceso a más de una empresa, así que el
+// filtro de aislamiento ya no es siempre "una sola empresa_id". Puede ser:
+// - number: acotar a esa empresa (admin/empleado con una sola, o
+//   cualquiera filtrando por una puntual desde el EmpresaSwitcher).
+// - number[]: ver mezcladas las empresas de esa lista (admin/empleado con
+//   varias, sin filtrar por ninguna en particular).
+// - undefined: sin filtro -- ver todo (solo tiene sentido para
+//   super_admin).
+type EmpresaFiltro = number | number[];
+
+function aplicarFiltroEmpresa<T extends { eq: Function; in: Function }>(query: T, empresaId?: EmpresaFiltro): T {
+    if (empresaId === undefined) return query;
+    if (Array.isArray(empresaId)) {
+        return empresaId.length > 0 ? (query.in('empresa_id', empresaId) as T) : query;
+    }
+    return query.eq('empresa_id', empresaId) as T;
+}
+
+function perteneceAFiltroEmpresa(empresaIdGasto: number | null, filtro: EmpresaFiltro): boolean {
+    return Array.isArray(filtro) ? filtro.includes(empresaIdGasto as number) : empresaIdGasto === filtro;
+}
+
 // Un item extraído por Gemini (factura o audio), tal como lo devuelve
 // facturas-normalizer.
 export interface ItemGasto {
@@ -174,7 +196,7 @@ export class GastosService {
         evidencia?: DatosEvidencia | null,
         pago?: DatosPago | null,
         items?: DatosItemComprobante[],
-        empresaId?: number | null,
+        empresaId?: EmpresaFiltro | null,
     ) {
         await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa
 
@@ -210,7 +232,7 @@ export class GastosService {
 
     // Solo adjunta la evidencia (ej. cuando llega un audio sin comprobante,
     // pero igual queremos guardar el archivo original como respaldo).
-    async adjuntarEvidencia(gastoId: number, evidencia: DatosEvidencia, empresaId?: number | null) {
+    async adjuntarEvidencia(gastoId: number, evidencia: DatosEvidencia, empresaId?: EmpresaFiltro | null) {
         await this.obtenerPorId(gastoId, empresaId);
         return this.insertarEvidencia(gastoId, evidencia);
     }
@@ -221,7 +243,7 @@ export class GastosService {
     // Telegram/upload (ver facturas.service.ts), pero sin pasar por Gemini:
     // acá el usuario ya llenó los datos a mano (Pago, Comprobante), la
     // imagen es solo el respaldo visual.
-    async subirEvidenciaImagen(gastoId: number, file: Express.Multer.File, empresaId?: number | null) {
+    async subirEvidenciaImagen(gastoId: number, file: Express.Multer.File, empresaId?: EmpresaFiltro | null) {
         await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa, 404 si no
 
         const mimeType = file.mimetype;
@@ -706,6 +728,26 @@ export class GastosService {
         return gasto;
     }
 
+    // Usado por el flujo de Telegram (Paso 32): un super_admin no tiene
+    // empresa propia (empresa_id = null en usuarios), así que el gasto se
+    // crea primero con la empresa por defecto (ver
+    // obtenerEmpresaIdDeUsuario) y, si hay más de una empresa registrada,
+    // se le pregunta con botones y se corrige acá antes de preguntar
+    // categoría (la categoría depende de la empresa).
+    async actualizarEmpresa(gastoId: number, empresaId: number) {
+        const { data: gasto, error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .update({ empresa_id: empresaId })
+            .eq('id', gastoId)
+            .select('*')
+            .single();
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando la empresa del gasto: ${error.message}`);
+        }
+        return gasto;
+    }
+
     async confirmarConfianza(gastoId: number) {
         const { data: gasto, error } = await this.supabase
             .getClient()
@@ -730,7 +772,7 @@ export class GastosService {
     // interno, es mucho más simple y legible que pelear con el embedded
     // filter de PostgREST. Si el volumen crece de forma importante, esto es
     // el primer punto a revisar (mover el filtro a SQL o a una vista).
-    async listar(filtros: FiltrosGastos, empresaId?: number) {
+    async listar(filtros: FiltrosGastos, empresaId?: EmpresaFiltro) {
         const limite = Math.min(filtros.limite ?? 50, 200);
         const offset = filtros.offset ?? 0;
 
@@ -743,12 +785,15 @@ export class GastosService {
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false });
 
-        // Aislamiento por empresa: si viene empresaId (quien llama es admin,
-        // no super_admin), se fuerza. super_admin (empresaId undefined) ve
-        // de todas las empresas, igual que ya hace UsuariosService.listar().
-        if (empresaId !== undefined) {
-            query = query.eq('empresa_id', empresaId);
-        }
+        // Aislamiento por empresa: si viene un solo id (admin/empleado con
+        // una sola empresa, o cualquiera filtrando desde el
+        // EmpresaSwitcher), se fuerza esa. Si viene un array (Paso 33:
+        // admin/empleado con acceso a varias empresas y sin filtrar por
+        // una en particular), se ven mezcladas las de todas esas empresas
+        // -- nunca las de una empresa fuera de su lista. super_admin sin
+        // filtro (empresaId undefined) ve de todas las empresas que
+        // existen, igual que antes.
+        query = aplicarFiltroEmpresa(query, empresaId);
 
         if (filtros.desde) query = query.gte('fecha', filtros.desde);
         if (filtros.hasta) query = query.lte('fecha', filtros.hasta);
@@ -798,7 +843,7 @@ export class GastosService {
     // PROGRESO_SIREGG). "Hoy"/"semana"/"mes" se calculan en huso horario de
     // Perú, igual que ya hace facturas-normalizer.ts / GastosService (ver
     // fechaHoyPeru más arriba en este archivo).
-    async resumen(empresaId?: number) {
+    async resumen(empresaId?: EmpresaFiltro) {
         const client = this.supabase.getClient();
 
         const fechaHoyPeru = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
@@ -822,7 +867,7 @@ export class GastosService {
             .from('gastos')
             .select('monto, fecha, es_personal, categoria_id, proveedor_id, categorias(nombre), proveedores(nombre)')
             .gte('fecha', inicioMesStr);
-        if (empresaId !== undefined) queryMes = queryMes.eq('empresa_id', empresaId);
+        queryMes = aplicarFiltroEmpresa(queryMes, empresaId);
 
         const { data: gastosMes, error: errorMes } = await queryMes;
         if (errorMes) {
@@ -872,10 +917,11 @@ export class GastosService {
     }
 
     // empresaId: si viene definido, el gasto debe pertenecer a esa empresa
-    // o se trata como si no existiera (404, no 403 -- evitamos confirmarle
-    // a un usuario de otra empresa que el ID sí existe). super_admin llama
-    // con empresaId = undefined y ve cualquier gasto, igual que en listar().
-    async obtenerPorId(gastoId: number, empresaId?: number | null) {
+    // (un solo id) o a alguna de la lista (array, Paso 33), o se trata
+    // como si no existiera (404, no 403 -- evitamos confirmarle a un
+    // usuario ajeno que el ID sí existe). super_admin llama con
+    // empresaId = undefined y ve cualquier gasto, igual que en listar().
+    async obtenerPorId(gastoId: number, empresaId?: EmpresaFiltro | null) {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
@@ -891,7 +937,7 @@ export class GastosService {
         if (!data) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
-        if (empresaId !== undefined && empresaId !== null && data.empresa_id !== empresaId) {
+        if (empresaId !== undefined && empresaId !== null && !perteneceAFiltroEmpresa(data.empresa_id, empresaId)) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
 
@@ -938,7 +984,7 @@ export class GastosService {
             categoria_id: number;
             proveedor_id: number;
         }>,
-        empresaId?: number | null,
+        empresaId?: EmpresaFiltro | null,
     ) {
         const gastoActual = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
 
@@ -954,11 +1000,11 @@ export class GastosService {
             .eq('id', gastoId);
 
         // Defensa en profundidad: aunque obtenerPorId ya validó la empresa
-        // arriba, este .eq() evita que un update se cuele por una carrera
+        // arriba, este filtro evita que un update se cuele por una carrera
         // entre esa validación y este UPDATE (p. ej. el gasto cambiando de
         // empresa entre medio, aunque hoy no hay flujo que haga eso).
         if (empresaId !== undefined && empresaId !== null) {
-            query = query.eq('empresa_id', empresaId);
+            query = aplicarFiltroEmpresa(query, empresaId);
         }
 
         const { data, error } = await query.select('*').single();
@@ -979,7 +1025,7 @@ export class GastosService {
         const proveedorId = cambios.proveedor_id ?? gastoActual.proveedor_id;
         if (cambios.categoria_id !== undefined && proveedorId) {
             const esPersonal = cambios.es_personal ?? gastoActual.es_personal;
-            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal, empresaId);
+            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal, data.empresa_id);
         }
 
         return data;
@@ -1005,11 +1051,22 @@ export class GastosService {
     // acá directo en vez de inyectar EmpresasService para no crear una
     // dependencia circular entre módulos.
     async obtenerEmpresaIdDeUsuario(usuarioId: number): Promise<number | null> {
+        // Paso 33: empresa_id (una sola FK en usuarios) se reemplazó por
+        // la tabla puente usuario_empresas -- un usuario puede tener
+        // acceso a varias. Acá se usa solo como el empresa_id "de
+        // arranque" con el que se crea el gasto (Telegram): si el usuario
+        // tiene más de una, TelegramService.preguntarEmpresaSiFalta ya se
+        // encarga de preguntar y corregirlo con actualizarEmpresa() antes
+        // de preguntar categoría -- la que se devuelve acá para ese caso
+        // es solo un valor de partida razonable (la primera asignada), no
+        // la definitiva.
         const { data, error } = await this.supabase
             .getClient()
-            .from('usuarios')
+            .from('usuario_empresas')
             .select('empresa_id')
-            .eq('id', usuarioId)
+            .eq('usuario_id', usuarioId)
+            .order('empresa_id', { ascending: true })
+            .limit(1)
             .maybeSingle();
 
         if (error) {
@@ -1104,7 +1161,7 @@ export class GastosService {
     // /gastos/:id/pago para el botón "Añadir" de Pagos en ExpenseDetail.
     // Sigue siendo usado internamente por crear()/adjuntarComprobante() para
     // el flujo de Telegram (factura + Yape), sin cambios ahí.
-    async insertarPago(gastoId: number, datos: DatosPago, empresaId?: number | null) {
+    async insertarPago(gastoId: number, datos: DatosPago, empresaId?: EmpresaFiltro | null) {
         await this.obtenerPorId(gastoId, empresaId); // valida que el gasto exista y sea de esta empresa, 404 si no
         const { data, error } = await this.supabase
             .getClient()

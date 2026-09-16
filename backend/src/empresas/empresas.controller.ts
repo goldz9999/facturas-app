@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { EmpresasService } from './empresas.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
@@ -20,13 +20,28 @@ export class EmpresasController {
         return this.empresasService.listar();
     }
 
-    // Un admin puede consultar su propia empresa (chequeo hecho en el controller
-    // porque el service no conoce el request); super_admin puede ver cualquiera.
+    // Paso 33: usado por el EmpresaSwitcher del frontend para admin/empleado
+    // con acceso a más de una empresa (antes solo existía para
+    // super_admin, que usa listar() de arriba). Cualquier rol autenticado
+    // puede llamarlo -- cada quien solo ve las suyas, resueltas desde su
+    // propio JWT, nunca de un query param.
+    @Get('mias')
+    @Roles('super_admin', 'admin', 'empleado')
+    async mias(@Request() req) {
+        if (req.user.rol === 'super_admin') {
+            return this.empresasService.listar();
+        }
+        const ids: number[] = req.user.empresa_ids ?? [];
+        return Promise.all(ids.map((id) => this.empresasService.obtenerPorId(id)));
+    }
+
+    // Un admin puede consultar cualquier empresa a la que tenga acceso
+    // (Paso 33: puede ser más de una); super_admin puede ver cualquiera.
     @Get(':id')
     @Roles('super_admin', 'admin')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
-        if (req.user.rol === 'admin' && req.user.empresa_id !== id) {
-            return this.empresasService.obtenerPorId(req.user.empresa_id);
+        if (req.user.rol === 'admin' && !(req.user.empresa_ids ?? []).includes(id)) {
+            throw new ForbiddenException('No tienes acceso a esa empresa.');
         }
         return this.empresasService.obtenerPorId(id);
     }

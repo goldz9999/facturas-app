@@ -5,15 +5,34 @@ import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
 import { EmpresasService } from '../empresas/empresas.service';
 
+// Paso 33: empresa_id (una sola FK) se reemplazó por la tabla puente
+// usuario_empresas -- un usuario puede tener acceso a más de una empresa.
+// `empresa_ids` no es una columna real: se arma en cada método uniendo con
+// usuario_empresas, para no tener que tocar todos los callers que ya
+// esperaban un objeto Usuario con la info de empresa adentro.
 export interface Usuario {
     id: number;
     telegram_id: number;
     nombre: string | null;
     rol: string;
     activo: boolean;
-    empresa_id: number | null;
+    empresa_ids: number[];
+    puede_registrar_personal: boolean;
     creado_en: string;
 }
+
+interface FilaUsuario {
+    id: number;
+    telegram_id: number;
+    nombre: string | null;
+    rol: string;
+    activo: boolean;
+    puede_registrar_personal: boolean;
+    creado_en: string;
+    usuario_empresas?: Array<{ empresa_id: number }>;
+}
+
+const SELECT_CON_EMPRESAS = '*, usuario_empresas(empresa_id)';
 
 @Injectable()
 export class UsuariosService {
@@ -22,46 +41,82 @@ export class UsuariosService {
         private empresasService: EmpresasService,
     ) { }
 
+    private mapear(fila: FilaUsuario): Usuario {
+        const { usuario_empresas, ...resto } = fila;
+        return {
+            ...resto,
+            empresa_ids: (usuario_empresas ?? []).map((e) => e.empresa_id),
+        };
+    }
+
     async buscarPorTelegramId(telegramId: number | string): Promise<Usuario | null> {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('*')
+            .select(SELECT_CON_EMPRESAS)
             .eq('telegram_id', telegramId)
             .maybeSingle();
 
         if (error) throw new Error(`Error consultando usuarios: ${error.message}`);
-        return data;
+        return data ? this.mapear(data as unknown as FilaUsuario) : null;
     }
 
+    // Usado por TelegramService (Paso 32/33) para saber el rol/permisos del
+    // usuario dueño de un gasto (buscarPorTelegramId no sirve ahí porque en
+    // esos puntos del flujo solo se tiene el usuarios.id interno, no el
+    // telegram_id).
+    async obtenerPorId(id: number): Promise<Usuario | null> {
+        const { data, error } = await this.supabaseService
+            .getClient()
+            .from('usuarios')
+            .select(SELECT_CON_EMPRESAS)
+            .eq('id', id)
+            .maybeSingle();
+
+        if (error) throw new Error(`Error consultando usuarios: ${error.message}`);
+        return data ? this.mapear(data as unknown as FilaUsuario) : null;
+    }
+
+    // empresaId: si viene, solo trae usuarios con acceso a esa empresa
+    // (admin de empresa listando su equipo). super_admin llama sin filtro.
     async listar(empresaId?: number): Promise<Usuario[]> {
         let query = this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('*')
+            .select(SELECT_CON_EMPRESAS)
             .order('creado_en', { ascending: false });
 
         if (empresaId !== undefined) {
-            query = query.eq('empresa_id', empresaId);
+            // Filtra por usuarios que tengan una fila en usuario_empresas
+            // para esa empresa (Supabase: filtro sobre tabla embebida).
+            query = query.eq('usuario_empresas.empresa_id', empresaId);
         }
 
         const { data, error } = await query;
-
         if (error) throw new Error(`Error listando usuarios: ${error.message}`);
-        return data ?? [];
+
+        const filas = (data ?? []) as unknown as FilaUsuario[];
+        // El .eq sobre la tabla embebida filtra la fila anidada, no la fila
+        // principal (puede devolver usuarios sin ninguna empresa si no
+        // matchea) -- se descartan acá los que quedaron sin empresas tras
+        // el filtro, para no listar usuarios ajenos a la empresa pedida.
+        const usuarios = filas.map((f) => this.mapear(f));
+        return empresaId !== undefined ? usuarios.filter((u) => u.empresa_ids.includes(empresaId)) : usuarios;
     }
 
-    async crear(dto: CrearUsuarioDto, forzarEmpresaId?: number): Promise<Usuario> {
-        // Si quien llama es admin de una empresa (no super_admin), forzarEmpresaId
-        // llega seteado desde el controller y pisa cualquier empresa_id del body:
-        // un admin nunca puede crear usuarios para otra empresa.
-        // Si no viene empresa_id explícito ni forzado, se asigna a la empresa por
-        // defecto (hoy solo existe una). Cuando exista más de una empresa,
-        // omitir este campo seguirá funcionando (cae en la primera
-        // registrada por id), pero deja de ser una elección segura -- en ese
-        // momento habría que exigir el campo en vez de asumir un default.
-        const empresaId =
-            forzarEmpresaId ?? dto.empresa_id ?? (await this.empresasService.obtenerPorDefecto())?.id ?? null;
+    // empresaIds: a qué empresas queda asignado el usuario nuevo.
+    // - Si quien crea es admin de empresa (no super_admin), el controller
+    //   fuerza forzarEmpresaIds = [su propia empresa] y dto.empresa_ids se
+    //   ignora: un admin nunca puede dar de alta a alguien en otra empresa.
+    // - Si no viene ninguno ni forzado, se asigna a la empresa por defecto
+    //   (hoy solo existe una) -- mismo comportamiento que antes de este
+    //   paso.
+    async crear(dto: CrearUsuarioDto, forzarEmpresaIds?: number[]): Promise<Usuario> {
+        let empresaIds = forzarEmpresaIds ?? dto.empresa_ids ?? [];
+        if (empresaIds.length === 0) {
+            const porDefecto = await this.empresasService.obtenerPorDefecto();
+            if (porDefecto) empresaIds = [porDefecto.id];
+        }
 
         const passwordHash = dto.password ? await bcrypt.hash(dto.password, 10) : null;
 
@@ -73,19 +128,25 @@ export class UsuariosService {
                 nombre: dto.nombre ?? null,
                 rol: dto.rol ?? 'empleado',
                 activo: dto.activo ?? true,
-                empresa_id: empresaId,
                 email: dto.email ?? null,
                 password_hash: passwordHash,
+                puede_registrar_personal: dto.puede_registrar_personal ?? true,
             })
             .select('*')
             .single();
 
         if (error) throw new Error(`Error creando usuario: ${error.message}`);
-        return data;
+
+        if (empresaIds.length > 0) {
+            await this.asignarEmpresas(data.id, empresaIds);
+        }
+
+        return (await this.obtenerPorId(data.id))!;
     }
 
-    // empresaId presente = quien llama es admin de empresa: solo puede tocar
-    // usuarios de su propia empresa (mismo patrón que crear/listar).
+    // empresaIdPermitido presente = quien llama es admin de empresa: solo
+    // puede tocar usuarios que ya tengan acceso a su propia empresa (mismo
+    // patrón que crear/listar).
     async actualizar(id: number, dto: ActualizarUsuarioDto, empresaIdPermitido?: number): Promise<Usuario> {
         if (empresaIdPermitido !== undefined) {
             await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
@@ -98,24 +159,41 @@ export class UsuariosService {
         if (dto.activo !== undefined) cambios.activo = dto.activo;
         if (dto.password) cambios.password_hash = await bcrypt.hash(dto.password, 10);
         if (dto.telegram_id !== undefined) cambios.telegram_id = dto.telegram_id;
-        // Reasignar empresa solo tiene sentido para quien puede ver todas
-        // (super_admin, empresaIdPermitido === undefined). Un admin de
-        // empresa nunca debería poder cambiar la empresa de nadie.
-        if (dto.empresa_id !== undefined && empresaIdPermitido === undefined) {
-            cambios.empresa_id = dto.empresa_id;
+        if (dto.puede_registrar_personal !== undefined) {
+            cambios.puede_registrar_personal = dto.puede_registrar_personal;
         }
 
-        const { data, error } = await this.supabaseService
-            .getClient()
-            .from('usuarios')
-            .update(cambios)
-            .eq('id', id)
-            .select('*')
-            .maybeSingle();
+        if (Object.keys(cambios).length > 0) {
+            const { error } = await this.supabaseService.getClient().from('usuarios').update(cambios).eq('id', id);
+            if (error) throw new Error(`Error actualizando usuario: ${error.message}`);
+        }
 
-        if (error) throw new Error(`Error actualizando usuario: ${error.message}`);
-        if (!data) throw new NotFoundException(`Usuario ${id} no encontrado`);
-        return data;
+        // Reasignar empresas: solo quien puede ver todas (super_admin,
+        // empresaIdPermitido === undefined) puede mandar la lista completa
+        // de empresas de otro usuario. Un admin de empresa nunca debería
+        // poder quitarle a alguien el acceso a una empresa que él ni
+        // siquiera administra.
+        if (dto.empresa_ids !== undefined && empresaIdPermitido === undefined) {
+            await this.asignarEmpresas(id, dto.empresa_ids);
+        }
+
+        const actualizado = await this.obtenerPorId(id);
+        if (!actualizado) throw new NotFoundException(`Usuario ${id} no encontrado`);
+        return actualizado;
+    }
+
+    // Reemplaza por completo la lista de empresas del usuario (borra las
+    // que ya no estén, inserta las nuevas). Usado por actualizar() y desde
+    // TelegramService no hace falta -- ese flujo solo lee, nunca reasigna.
+    async asignarEmpresas(usuarioId: number, empresaIds: number[]): Promise<void> {
+        const client = this.supabaseService.getClient();
+        const { error: errorBorrado } = await client.from('usuario_empresas').delete().eq('usuario_id', usuarioId);
+        if (errorBorrado) throw new Error(`Error reasignando empresas: ${errorBorrado.message}`);
+
+        if (empresaIds.length === 0) return;
+        const filas = empresaIds.map((empresaId) => ({ usuario_id: usuarioId, empresa_id: empresaId }));
+        const { error: errorInsert } = await client.from('usuario_empresas').insert(filas);
+        if (errorInsert) throw new Error(`Error reasignando empresas: ${errorInsert.message}`);
     }
 
     // Borrado real (distinto de desactivar). Los gastos que haya generado
@@ -123,7 +201,8 @@ export class UsuariosService {
     // como snapshot de texto (`gastos.usuario_nombre`) y su `usuario_id`
     // simplemente queda en null (ON DELETE SET NULL en la FK). Así se puede
     // dar de baja a alguien que ya no trabaja en la empresa sin perder el
-    // historial de a quién pertenecía cada gasto.
+    // historial de a quién pertenecía cada gasto. usuario_empresas se borra
+    // en cascada (ON DELETE CASCADE), no hace falta limpiarla a mano.
     async eliminar(id: number, empresaIdPermitido?: number): Promise<void> {
         if (empresaIdPermitido !== undefined) {
             await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
@@ -139,9 +218,9 @@ export class UsuariosService {
     private async verificarPerteneceAEmpresa(id: number, empresaId: number): Promise<void> {
         const { data, error } = await this.supabaseService
             .getClient()
-            .from('usuarios')
-            .select('id')
-            .eq('id', id)
+            .from('usuario_empresas')
+            .select('usuario_id')
+            .eq('usuario_id', id)
             .eq('empresa_id', empresaId)
             .maybeSingle();
 
@@ -150,17 +229,16 @@ export class UsuariosService {
     }
 
     async desactivar(id: number): Promise<Usuario> {
-        const { data, error } = await this.supabaseService
+        const { error } = await this.supabaseService
             .getClient()
             .from('usuarios')
             .update({ activo: false })
-            .eq('id', id)
-            .select('*')
-            .maybeSingle();
+            .eq('id', id);
 
         if (error) throw new Error(`Error desactivando usuario: ${error.message}`);
-        if (!data) throw new NotFoundException(`Usuario ${id} no encontrado`);
-        return data;
+        const actualizado = await this.obtenerPorId(id);
+        if (!actualizado) throw new NotFoundException(`Usuario ${id} no encontrado`);
+        return actualizado;
     }
 
     // Usado por TelegramService antes de procesar cualquier archivo.

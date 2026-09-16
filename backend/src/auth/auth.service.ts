@@ -9,7 +9,8 @@ export interface UsuarioAutenticado {
     nombre: string | null;
     email: string | null;
     rol: string;
-    empresa_id: number | null;
+    empresa_ids: number[];
+    puede_registrar_personal: boolean;
 }
 
 @Injectable()
@@ -20,10 +21,13 @@ export class AuthService {
     ) { }
 
     async login(dto: LoginDto): Promise<{ access_token: string; usuario: UsuarioAutenticado }> {
+        // Paso 33: empresa_id (una sola FK) se reemplazó por la tabla
+        // puente usuario_empresas -- se trae junto con el usuario en el
+        // mismo select para no hacer una segunda consulta.
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, password_hash, rol, activo, empresa_id')
+            .select('id, nombre, email, password_hash, rol, activo, puede_registrar_personal, usuario_empresas(empresa_id)')
             .eq('email', dto.email)
             .maybeSingle();
 
@@ -49,14 +53,16 @@ export class AuthService {
             nombre: data.nombre,
             email: data.email,
             rol: data.rol,
-            empresa_id: data.empresa_id,
+            empresa_ids: (data.usuario_empresas ?? []).map((e: { empresa_id: number }) => e.empresa_id),
+            puede_registrar_personal: data.puede_registrar_personal,
         };
 
         const access_token = await this.jwtService.signAsync({
             sub: usuario.id,
             email: usuario.email,
             rol: usuario.rol,
-            empresa_id: usuario.empresa_id,
+            empresa_ids: usuario.empresa_ids,
+            puede_registrar_personal: usuario.puede_registrar_personal,
         });
 
         return { access_token, usuario };
