@@ -25,6 +25,7 @@ export class GastosController {
     @ApiQuery({ name: 'medio_pago', required: false, type: String })
     @ApiQuery({ name: 'pendiente_revision', required: false, type: Boolean })
     @ApiQuery({ name: 'posible_duplicado', required: false, type: Boolean })
+    @ApiQuery({ name: 'duplicado_confirmado', required: false, type: Boolean })
     @ApiQuery({ name: 'sin_comprobante', required: false, type: Boolean })
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
     @ApiQuery({ name: 'limite', required: false, type: Number })
@@ -45,6 +46,7 @@ export class GastosController {
             medioPago: q.medio_pago,
             pendienteRevision: aBooleano(q.pendiente_revision),
             posibleDuplicado: aBooleano(q.posible_duplicado),
+            duplicadoConfirmado: aBooleano(q.duplicado_confirmado),
             sinComprobante: aBooleano(q.sin_comprobante),
             limite: aNumero(q.limite),
             offset: aNumero(q.offset),
@@ -73,6 +75,15 @@ export class GastosController {
     async resumen(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.resumen(empresaId);
+    }
+
+    // Conteos para las cards resumen de Gastos.jsx. Debe declararse antes de
+    // GET ':id' por el mismo motivo que 'resumen' (ParseIntPipe).
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
+    @Get('conteos')
+    async conteos(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.contarPorEstado(empresaId);
     }
 
     @Get(':id')

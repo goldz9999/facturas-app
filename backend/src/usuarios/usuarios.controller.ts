@@ -53,6 +53,16 @@ export class UsuariosController {
             if (dto.activo === false) {
                 throw new ForbiddenException('No puedes desactivar tu propio usuario');
             }
+            // Mismo motivo que el rol: si pudieras tocar tu propio
+            // puede_registrar_personal, un admin (o cualquier usuario con
+            // acceso a este endpoint) se auto-otorgaría un permiso que el
+            // super_admin/admin superior decidió no darle, sin que nadie más
+            // lo apruebe. El frontend ya oculta este campo al editarte a ti
+            // mismo (UserList.jsx) -- esto es la validación real, porque el
+            // frontend se puede saltear pegándole directo al PATCH.
+            if (dto.puede_registrar_personal !== undefined && dto.puede_registrar_personal !== req.user.puede_registrar_personal) {
+                throw new ForbiddenException('No puedes cambiar tu propio permiso de gastos personales');
+            }
         }
 
         if (req.user.rol === 'admin') {
