@@ -43,7 +43,7 @@ export class GastosGateway implements OnGatewayConnection, OnGatewayDisconnect {
             if (!token) throw new Error('Sin token');
 
             const secret = this.config.get<string>('JWT_SECRET') ?? 'dev-secret-cambiar-en-produccion';
-            const payload = jwt.verify(token, secret) as {
+            const payload = jwt.verify(token, secret) as unknown as {
                 sub: number;
                 rol: string;
                 empresa_ids: number[];
