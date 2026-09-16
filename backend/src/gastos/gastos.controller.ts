@@ -25,7 +25,6 @@ export class GastosController {
     @ApiQuery({ name: 'medio_pago', required: false, type: String })
     @ApiQuery({ name: 'pendiente_revision', required: false, type: Boolean })
     @ApiQuery({ name: 'posible_duplicado', required: false, type: Boolean })
-    @ApiQuery({ name: 'duplicado_confirmado', required: false, type: Boolean })
     @ApiQuery({ name: 'sin_comprobante', required: false, type: Boolean })
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
     @ApiQuery({ name: 'limite', required: false, type: Number })
@@ -46,7 +45,6 @@ export class GastosController {
             medioPago: q.medio_pago,
             pendienteRevision: aBooleano(q.pendiente_revision),
             posibleDuplicado: aBooleano(q.posible_duplicado),
-            duplicadoConfirmado: aBooleano(q.duplicado_confirmado),
             sinComprobante: aBooleano(q.sin_comprobante),
             limite: aNumero(q.limite),
             offset: aNumero(q.offset),
@@ -77,15 +75,6 @@ export class GastosController {
         return this.gastosService.resumen(empresaId);
     }
 
-    // Conteos para las cards resumen de Gastos.jsx. Debe declararse antes de
-    // GET ':id' por el mismo motivo que 'resumen' (ParseIntPipe).
-    @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
-    @Get('conteos')
-    async conteos(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
-        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.contarPorEstado(empresaId);
-    }
-
     @Get(':id')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req);
@@ -102,6 +91,10 @@ export class GastosController {
             es_personal?: boolean;
             categoria_id?: number;
             proveedor_id?: number;
+            // RF-11: asociar/cambiar el pedido del gasto desde el panel.
+            // null quita la asociación ("Sin pedido"). GastosService valida
+            // que el pedido sea de la misma empresa del gasto.
+            pedido_id?: number | null;
         },
         @Request() req,
     ) {

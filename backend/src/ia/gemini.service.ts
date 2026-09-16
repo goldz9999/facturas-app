@@ -629,6 +629,29 @@ Si no:
 ""
 
 ==================================================
+9.1. PEDIDO / PROYECTO MENCIONADO
+==================================================
+
+Extrae PedidoMencionado únicamente si la persona menciona de forma explícita un pedido, proyecto, proceso o centro de costo al que corresponde la compra.
+
+Frases que SÍ cuentan:
+
+"para el pedido Dragon"
+"esto es para Dragon"
+"compra para producción Dragon"
+"material del proyecto Dragon"
+
+En esos casos devuelve solo el nombre, sin las palabras "pedido", "proyecto" ni "para":
+
+"Dragon"
+
+Si la persona NO menciona ningún pedido o proyecto:
+""
+
+NO infieras el pedido a partir del proveedor, del producto ni del contexto.
+NO inventes un nombre de pedido.
+
+==================================================
 10. IGV Y SUBTOTAL
 ==================================================
 
@@ -710,6 +733,7 @@ Estructura:
 "Total": "number|null",
 "MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
 "NumeroOperacion": "string",
+"PedidoMencionado": "string",
 "Confianza": "alta|media|baja"
 }`;
 
@@ -729,6 +753,11 @@ export interface FacturaExtraida {
     Total?: number | null;
     MedioPago?: string;
     NumeroOperacion?: string;
+    // RF-11: nombre del pedido/proyecto SI la persona lo menciona
+    // explícitamente ("para el pedido Dragon"). Es solo una pista en texto
+    // libre: el backend lo resuelve contra `pedidos` de la empresa y nunca
+    // lo acepta como id (ver PedidosService.buscarPorNombre).
+    PedidoMencionado?: string;
     Confianza?: string;
 }
 

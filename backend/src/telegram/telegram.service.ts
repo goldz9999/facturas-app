@@ -7,6 +7,7 @@ import { TelegramEstadoService } from './telegram-estado.service';
 import { CategoriasService } from '../categorias/categorias.service';
 import { ProveedoresService } from '../proveedores/proveedores.service';
 import { EmpresasService } from '../empresas/empresas.service';
+import { PedidosService } from '../pedidos/pedidos.service';
 
 interface TelegramUpdate {
     message?: {
@@ -38,6 +39,7 @@ export class TelegramService {
         private categoriasService: CategoriasService,
         private proveedoresService: ProveedoresService,
         private empresasService: EmpresasService,
+        private pedidosService: PedidosService,
     ) {
         this.token = this.config.get<string>('TELEGRAM_BOT_TOKEN');
     }
@@ -198,6 +200,17 @@ export class TelegramService {
                 if (!empresaPendiente) {
                     await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
                 }
+            } else if (!pidioConfianza && !resultado.vinculado_a) {
+                // RF-11: cuando NO hay que preguntar categoría (proveedor ya
+                // conocido, clasificación aprendida) la cadena
+                // empresa→categoría→tipo→pedido nunca se dispara, así que el
+                // gasto quedaría sin pedido sin haber preguntado. Acá se
+                // cubre ese camino. Se excluyen los casos donde ya hay otra
+                // pregunta abierta (confirmación de confianza o de
+                // agrupación) para no encimar dos botoneras: en el de
+                // confianza, la pregunta se retoma desde el callback
+                // media_ok, igual que ya hace la de categoría.
+                await this.preguntarPedidoSiFalta(chatId, resultado.gasto_id, resultado.pedido_mencionado);
             }
 
             // La heurística de agrupación (facturas.service.ts) decidió que
@@ -431,6 +444,96 @@ export class TelegramService {
         await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal, gastoParaEmpresa.empresa_id);
 
         await this.enviarMensaje(chatId, '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.');
+
+        // RF-11: última pregunta de la cadena (empresa → categoría → tipo →
+        // pedido). Va al final porque la lista de pedidos depende de la
+        // empresa ya resuelta, y porque es la única opcional: si la empresa
+        // no tiene pedidos activos, no se pregunta nada.
+        await this.preguntarPedidoSiFalta(chatId, gastoId);
+    }
+
+
+    // --- Pedidos / proyectos (RF-11, §8/§12) ---
+
+    // Pregunta a qué pedido pertenece el gasto, si la empresa tiene pedidos
+    // activos y el gasto todavía no tiene uno. Se llama al final de la
+    // clasificación (finalizarClasificacion), no antes: la lista de pedidos
+    // depende de gasto.empresa_id, igual que la de categorías, así que para
+    // cuando llegamos acá la empresa ya quedó resuelta.
+    //
+    // `pedidoMencionado` es el nombre que Gemini leyó de un audio/texto
+    // libre ("para el pedido Dragon"), sin resolver. Si resuelve a UNA sola
+    // coincidencia se propone directamente ("¿Es el pedido Dragon?"); si
+    // resuelve a varias ("Dragon", "Dragon 2026") o a ninguna, se muestra
+    // la lista completa -- nunca se asocia automáticamente (§19/§20: la IA
+    // propone un nombre, el id siempre sale de la base de datos y el
+    // usuario confirma).
+    private async preguntarPedidoSiFalta(
+        chatId: number | string,
+        gastoId: number,
+        pedidoMencionado?: string | null,
+    ) {
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        if (gasto.pedido_id) return; // ya tiene pedido, no hay nada que preguntar
+        if (!gasto.empresa_id) return;
+
+        const activos = await this.pedidosService.listarActivos(gasto.empresa_id);
+        if (activos.length === 0) return; // la empresa no usa pedidos: no molestamos
+
+        if (pedidoMencionado) {
+            const coincidencias = await this.pedidosService.buscarPorNombre(pedidoMencionado, gasto.empresa_id);
+            if (coincidencias.length === 1) {
+                const p = coincidencias[0];
+                await this.enviarMensaje(chatId, `📦 ¿Este gasto corresponde al pedido "${p.nombre}"?`, {
+                    inline_keyboard: [
+                        [{ text: `✅ Sí, ${p.nombre}`, callback_data: `pedido:${gastoId}:${p.id}` }],
+                        [{ text: '📋 Elegir otro', callback_data: `pedido_lista:${gastoId}` }],
+                        [{ text: '🚫 Sin pedido', callback_data: `pedido:${gastoId}:0` }],
+                    ],
+                });
+                return;
+            }
+            // 0 coincidencias (mencionó un pedido que no existe) o varias
+            // (ambiguo): se cae a la lista completa, sin elegir por él.
+        }
+
+        await this.mostrarListaDePedidos(chatId, gastoId, activos);
+    }
+
+    // Botonera con los pedidos activos de la empresa del gasto. Extraído
+    // aparte porque se llega acá por dos caminos: directo (sin mención de
+    // pedido) o desde el botón "Elegir otro" de la propuesta.
+    private async mostrarListaDePedidos(
+        chatId: number | string,
+        gastoId: number,
+        activos?: Array<{ id: number; nombre: string }>,
+    ) {
+        let pedidos = activos;
+        if (!pedidos) {
+            const gasto = await this.gastosService.obtenerPorId(gastoId);
+            if (!gasto.empresa_id) return;
+            pedidos = await this.pedidosService.listarActivos(gasto.empresa_id);
+        }
+        if (pedidos.length === 0) return;
+
+        // Dos por fila, mismo criterio visual que preguntarCategoria.
+        const filas: Array<Array<{ text: string; callback_data: string }>> = [];
+        for (let i = 0; i < pedidos.length; i += 2) {
+            filas.push(
+                pedidos.slice(i, i + 2).map((p) => ({
+                    text: p.nombre,
+                    callback_data: `pedido:${gastoId}:${p.id}`,
+                })),
+            );
+        }
+        // pedido_id 0 = "sin pedido" (se guarda como null). Se usa 0 y no
+        // una acción aparte para que el chequeo de dueño del gasto en
+        // manejarCallbackQuery cubra este caso con la misma regla.
+        filas.push([{ text: '🚫 Sin pedido', callback_data: `pedido:${gastoId}:0` }]);
+
+        await this.enviarMensaje(chatId, '📦 ¿A qué pedido corresponde este gasto?', {
+            inline_keyboard: filas,
+        });
     }
 
     // --- Heurística de agrupación: confirmación con botones Sí/No ---
@@ -602,7 +705,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'empresa'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'empresa', 'pedido', 'pedido_lista'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -643,6 +746,14 @@ export class TelegramService {
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
                 await this.preguntarComprobanteSiFalta(chatId, gastoId);
                 await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
+                // Si no hizo falta preguntar categoría (ya la tenía), la
+                // cadena que termina en preguntarPedidoSiFalta no se dispara
+                // -- se cubre acá. preguntarPedidoSiFalta ya sale temprano si
+                // el gasto tiene pedido, así que no duplica la pregunta.
+                const gastoTrasConfirmar = await this.gastosService.obtenerPorId(gastoId);
+                if (gastoTrasConfirmar.categoria_id) {
+                    await this.preguntarPedidoSiFalta(chatId, gastoId);
+                }
                 return;
             }
 
@@ -688,6 +799,31 @@ export class TelegramService {
                 if (!gasto.categoria_id) {
                     await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
                 }
+                return;
+            }
+
+            // RF-11: eligió el pedido (o "Sin pedido", que llega como 0).
+            // El id NO se confía tal cual: actualizar() valida contra
+            // PedidosService.validarDeEmpresa que el pedido sea de la misma
+            // empresa del gasto, así que un callback_data armado a mano con
+            // un pedido de otra empresa rebota con 404.
+            if (accion === 'pedido') {
+                const pedidoId = Number(segundoIdStr) || null;
+                if (!pedidoId) {
+                    await this.enviarMensaje(chatId, '👍 Listo, queda sin pedido asignado.');
+                    return;
+                }
+                const gastoActual = await this.gastosService.obtenerPorId(gastoId);
+                const pedido = await this.pedidosService.validarDeEmpresa(pedidoId, gastoActual.empresa_id);
+                await this.gastosService.actualizar(gastoId, { pedido_id: pedidoId });
+                await this.enviarMensaje(chatId, `📦 Asociado al pedido "${pedido.nombre}".`);
+                return;
+            }
+
+            // Botón "Elegir otro" de la propuesta de pedido: descarta lo que
+            // Gemini había leído y muestra la lista completa.
+            if (accion === 'pedido_lista') {
+                await this.mostrarListaDePedidos(chatId, gastoId);
                 return;
             }
 

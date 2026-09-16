@@ -485,6 +485,11 @@ export class FacturasService {
       posible_duplicado: posibleDuplicado,
       proveedor_id: proveedorId,
       falta_categoria: faltaPreguntarCategoria,
+      // RF-11: pista en texto libre, sin resolver. TelegramService la
+      // resuelve contra los pedidos de la empresa del gasto y, si hay una
+      // sola coincidencia, la propone; si hay varias o ninguna, muestra la
+      // lista completa. Nunca se asocia automáticamente sin confirmar.
+      pedido_mencionado: factura.pedido_mencionado || '',
     };
   }
 

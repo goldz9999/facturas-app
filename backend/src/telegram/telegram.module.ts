@@ -9,6 +9,7 @@ import { CommonModule } from '../common/common.module';
 import { CategoriasModule } from '../categorias/categorias.module';
 import { ProveedoresModule } from '../proveedores/proveedores.module';
 import { EmpresasModule } from '../empresas/empresas.module';
+import { PedidosModule } from '../pedidos/pedidos.module';
 
 @Module({
     imports: [
@@ -19,6 +20,7 @@ import { EmpresasModule } from '../empresas/empresas.module';
         CategoriasModule,
         ProveedoresModule,
         EmpresasModule,
+        PedidosModule,
     ],
     controllers: [TelegramController],
     providers: [TelegramService, TelegramEstadoService],

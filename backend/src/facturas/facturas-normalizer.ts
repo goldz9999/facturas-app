@@ -59,6 +59,10 @@ export interface FacturaNormalizada {
     medio_pago: MedioPago | null;
     numero_operacion: string;
     confianza: NivelConfianza;
+    // RF-11: nombre de pedido que la persona mencionó en un audio/texto
+    // libre ("para el pedido Dragon"). Cadena vacía si no mencionó ninguno.
+    // NO es un id: el backend lo resuelve contra `pedidos` de la empresa.
+    pedido_mencionado: string;
     items: Array<{ producto: string; cantidad: number; costo: number }>;
 }
 
@@ -110,6 +114,7 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
         medio_pago: normalizarMedioPago(data.MedioPago),
         numero_operacion: data.NumeroOperacion != null ? String(data.NumeroOperacion).trim() : '',
         confianza,
+        pedido_mencionado: data.PedidoMencionado != null ? String(data.PedidoMencionado).trim() : '',
         items,
     };
 }
