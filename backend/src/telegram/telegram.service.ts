@@ -216,7 +216,7 @@ export class TelegramService {
                 await this.avisarPosibleDuplicado(chatId, resultado.gasto_id, resultado.posible_duplicado);
             }
         } catch (err) {
-            this.logger.error(`Error procesando update de Telegram: ${err.message}`);
+            this.logger.error(`Error procesando update de Telegram (chat ${chatId}): ${err.message}`, err.stack);
             await this.enviarMensaje(
                 chatId,
                 '❌ Hubo un error procesando tu factura. Intenta de nuevo en unos minutos.',
@@ -807,15 +807,56 @@ export class TelegramService {
         return null;
     }
 
+    // El error "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"
+    // (visto en producción, factura de Rommax's, 16/09/2026) pasa cuando
+    // `infoRes.json()` intenta parsear una respuesta que en realidad es una
+    // página de error HTML, no el JSON que devuelve normalmente la API de
+    // Telegram -- típicamente un 502/503/504 de un proxy/gateway en el
+    // camino (Koyeb/Railway del lado de salida, o el propio Telegram caído
+    // un momento), no un error de nuestro código. Antes esto reventaba con
+    // un mensaje inútil ("Unexpected token...") sin decir qué status HTTP
+    // llegó ni de qué endpoint. Ahora: se valida `res.ok` y el
+    // `content-type` ANTES de parsear como JSON, se reintenta una vez tras
+    // una pausa corta (por si fue un hiccup transitorio de red), y si
+    // vuelve a fallar el error queda con el status HTTP real y un
+    // fragmento del cuerpo crudo -- eso es lo que hace falta ver en los
+    // logs para saber si el problema fue Telegram, la red de salida, o
+    // otra cosa.
+    private async fetchJsonConReintento(url: string, intentos = 2): Promise<any> {
+        let ultimoError: unknown;
+        for (let intento = 1; intento <= intentos; intento++) {
+            try {
+                const res = await fetch(url);
+                const contentType = res.headers.get('content-type') ?? '';
+                if (!res.ok || !contentType.includes('application/json')) {
+                    const cuerpo = (await res.text()).slice(0, 300);
+                    throw new Error(
+                        `Respuesta no-JSON de Telegram (status ${res.status}, content-type "${contentType}"): ${cuerpo}`,
+                    );
+                }
+                return await res.json();
+            } catch (err) {
+                ultimoError = err;
+                this.logger.warn(
+                    `descargarArchivo: intento ${intento}/${intentos} falló para ${url.replace(this.token!, '***')}: ${(err as Error).message}`,
+                );
+                if (intento < intentos) await new Promise((r) => setTimeout(r, 1500));
+            }
+        }
+        throw ultimoError;
+    }
+
     private async descargarArchivo(fileId: string): Promise<Buffer> {
-        const infoRes = await fetch(`${this.apiBase}/getFile?file_id=${fileId}`);
-        const info = await infoRes.json();
+        const info = await this.fetchJsonConReintento(`${this.apiBase}/getFile?file_id=${fileId}`);
         if (!info.ok) {
             throw new Error(`No se pudo obtener el archivo de Telegram: ${JSON.stringify(info)}`);
         }
 
         const filePath = info.result.file_path;
         const fileRes = await fetch(`${this.fileBase}/${filePath}`);
+        if (!fileRes.ok) {
+            throw new Error(`No se pudo descargar el archivo de Telegram (status ${fileRes.status}): ${filePath}`);
+        }
         const arrayBuffer = await fileRes.arrayBuffer();
         return Buffer.from(arrayBuffer);
     }
