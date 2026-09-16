@@ -797,8 +797,13 @@ export class GastosService {
         let query = this.supabase
             .getClient()
             .from('gastos')
+            // Antes no traía `evidencias`: la lista solo mostraba comprobante
+            // y pago, sin foto. Eso hacía que, por ejemplo, la vista de
+            // Duplicados (que carga el gasto "nuevo" desde acá y el
+            // "original" desde obtenerPorId) mostrara foto en uno de los dos
+            // gastos y "Sin foto" en el otro aunque ambos sí la tuvieran.
             .select(
-                '*, categorias(nombre), proveedores(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion)',
+                '*, categorias(nombre), proveedores(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion), evidencias(*)',
             )
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false });
@@ -839,6 +844,10 @@ export class GastosService {
 
         let resultado = data ?? [];
 
+        // Firmar evidencias de cada gasto (mismo criterio que obtenerPorId).
+        // Se hace después del filtro en memoria / antes del slice final para
+        // no firmar de más filas que las que realmente se van a devolver,
+        // ya que createSignedUrl es una llamada de red por evidencia.
         if (filtros.medioPago) {
             resultado = resultado.filter((g: any) =>
                 (g.pagos ?? []).some((p: any) => p.medio === filtros.medioPago),
@@ -851,7 +860,12 @@ export class GastosService {
             });
         }
 
-        return resultado.slice(0, limite);
+        resultado = resultado.slice(0, limite);
+        resultado = await Promise.all(
+            resultado.map(async (g: any) => ({ ...g, evidencias: await this.firmarEvidencias(g.evidencias) })),
+        );
+
+        return resultado;
     }
 
     // Totales agregados para Dashboard.jsx (hoy/semana/mes, empresa vs
@@ -939,6 +953,37 @@ export class GastosService {
     // como si no existiera (404, no 403 -- evitamos confirmarle a un
     // usuario ajeno que el ID sí existe). super_admin llama con
     // empresaId = undefined y ve cualquier gasto, igual que en listar().
+    // Las evidencias se guardan en el bucket privado "Facturas" (ver
+    // facturas.service.ts / facturas-cleanup.service.ts) -- el frontend
+    // necesita una URL para mostrarlas, así que se firma acá (1h de
+    // validez) en vez de exponer el bucket como público. Extraído a método
+    // aparte porque tanto obtenerPorId como listar() necesitan firmarlas
+    // (antes solo obtenerPorId lo hacía, y listar() ni siquiera pedía la
+    // relación `evidencias` -- ver nota en listar()).
+    private async firmarEvidencias(evidencias: any[]): Promise<any[]> {
+        if (!evidencias || evidencias.length === 0) return evidencias ?? [];
+        return Promise.all(
+            evidencias.map(async (ev: any) => {
+                if (!ev.storage_path) return { ...ev, url: null };
+                const { data: firmada, error: errorFirma } = await this.supabase
+                    .getClient()
+                    .storage.from('Facturas')
+                    .createSignedUrl(ev.storage_path, 3600);
+                if (errorFirma) {
+                    // Antes esto se tragaba en silencio y el frontend
+                    // mostraba "Imagen no disponible" sin pista de por
+                    // qué. Logueamos acá (bucket mal escrito, storage_path
+                    // que no existe en el bucket, etc.) para poder
+                    // diagnosticarlo desde los logs de Railway.
+                    console.error(
+                        `[GastosService] Error firmando evidencia ${ev.id} (path: "${ev.storage_path}"): ${errorFirma.message}`,
+                    );
+                }
+                return { ...ev, url: firmada?.signedUrl ?? null };
+            }),
+        );
+    }
+
     async obtenerPorId(gastoId: number, empresaId?: EmpresaFiltro | null) {
         const { data, error } = await this.supabase
             .getClient()
@@ -959,32 +1004,7 @@ export class GastosService {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
 
-        // Las evidencias se guardan en el bucket privado "Facturas" (ver
-        // facturas.service.ts / facturas-cleanup.service.ts) -- ExpenseDetail
-        // necesita una URL para mostrarlas, así que se firma acá (1h de
-        // validez) en vez de exponer el bucket como público.
-        if (data.evidencias && data.evidencias.length > 0) {
-            data.evidencias = await Promise.all(
-                data.evidencias.map(async (ev: any) => {
-                    if (!ev.storage_path) return { ...ev, url: null };
-                    const { data: firmada, error: errorFirma } = await this.supabase
-                        .getClient()
-                        .storage.from('Facturas')
-                        .createSignedUrl(ev.storage_path, 3600);
-                    if (errorFirma) {
-                        // Antes esto se tragaba en silencio y el frontend
-                        // mostraba "Imagen no disponible" sin pista de por
-                        // qué. Logueamos acá (bucket mal escrito, storage_path
-                        // que no existe en el bucket, etc.) para poder
-                        // diagnosticarlo desde los logs de Railway.
-                        console.error(
-                            `[GastosService] Error firmando evidencia ${ev.id} (path: "${ev.storage_path}"): ${errorFirma.message}`,
-                        );
-                    }
-                    return { ...ev, url: firmada?.signedUrl ?? null };
-                }),
-            );
-        }
+        data.evidencias = await this.firmarEvidencias(data.evidencias);
 
         return data;
     }

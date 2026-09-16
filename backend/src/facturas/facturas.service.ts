@@ -130,14 +130,14 @@ export class FacturasService {
     }
 
     // 2+3. Transcribir + extraer con Gemini.
-    // OPTIMIZACIÓN DE LATENCIA: para imagen/documento, antes esto eran DOS
-    // llamadas secuenciales a Gemini (transcribirImagenODocumento -> texto
-    // plano, y luego extraerFactura -> JSON), es decir dos round-trips
-    // completos al modelo, uno esperando al otro. Ahora es una sola llamada
-    // multimodal que lee la imagen y devuelve el JSON estructurado
-    // directamente (ver GeminiService.extraerFacturaDeImagen), cortando a la
-    // mitad el tiempo de esta parte del pipeline. El audio sigue en dos
-    // pasos porque usa un prompt distinto pensado para lenguaje hablado.
+    // REVERTIDO (ver nota en GeminiService.extraerFacturaDeImagen): la
+    // versión de "una sola llamada" multimodal perdía precisión en
+    // comprobantes manuscritos/desordenados (perdía cantidades y
+    // anotaciones, y a veces no leía bien la fecha). Volvemos a las dos
+    // llamadas secuenciales (transcribirImagenODocumento -> texto plano,
+    // luego extraerFactura -> JSON): el paso de transcripción dedicado le da
+    // a Gemini mejor terreno para leer letra por letra antes de estructurar.
+    // El upload a Storage sigue corriendo en paralelo (no depende de Gemini).
     const resultado = esAudio
       ? await this.procesarTextoExtraido(
         await this.gemini.transcribirAudio(file.buffer, mimeType),
@@ -147,12 +147,16 @@ export class FacturasService {
         null,
       )
       : await (async () => {
-        const datosExtraidos = await this.gemini.extraerFacturaDeImagen(file.buffer, mimeType);
+        const textoTranscrito = await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
+        const resultadoFinal = await this.procesarTextoExtraido(
+          textoTranscrito,
+          usuarioId,
+          origen,
+          false,
+          { ext, nombreArchivoFinal },
+        );
         await subidaStorage; // recién acá hace falta que el upload haya terminado (para archivoInfo)
-        return this.procesarDatosExtraidos(datosExtraidos, usuarioId, origen, false, {
-          ext,
-          nombreArchivoFinal,
-        });
+        return resultadoFinal;
       })();
 
     await subidaStorage; // por si la rama de audio terminó antes que un upload que no aplica (no-op)
@@ -195,12 +199,10 @@ export class FacturasService {
     return this.procesarDatosExtraidos(datosExtraidos, usuarioId, origen, esAudio, archivoInfo, esTextoLibre);
   }
 
-  // Punto de entrada común a partir del paso 4 (normalizar), usado tanto por
-  // procesarTextoExtraido (audio/texto libre, que sí necesitan el paso 3 de
-  // arriba) como por procesarArchivoIndividual para imágenes/documentos, que
-  // desde el cambio de "una sola llamada a Gemini" (ver gemini.service.ts
-  // extraerFacturaDeImagen) ya llegan con `datosExtraidos` listo, sin pasar
-  // por transcripción + extracción como dos llamadas separadas.
+  // Punto de entrada común a partir del paso 4 (normalizar), usado por
+  // procesarTextoExtraido para todos los casos (audio, texto libre, e imagen/
+  // documento desde que se revirtió el atajo de "una sola llamada a Gemini",
+  // ver nota en gemini.service.ts extraerFacturaDeImagen).
   private async procesarDatosExtraidos(
     datosExtraidos: FacturaExtraida,
     usuarioId: number,
@@ -511,11 +513,11 @@ export class FacturasService {
     // WebP antes de subir (ahorro de espacio); Gemini sigue leyendo el
     // buffer original más abajo.
     //
-    // Mismas dos optimizaciones de latencia que en procesarArchivoIndividual:
-    // (1) el upload a Storage corre en paralelo con Gemini en vez de
-    // bloquear antes (son independientes), y (2) una sola llamada
-    // multimodal a Gemini (extraerFacturaDeImagen) en vez de transcribir y
-    // extraer como dos round-trips secuenciales.
+    // El upload a Storage sigue corriendo en paralelo con Gemini (son
+    // independientes). REVERTIDO el atajo de "una sola llamada" a Gemini
+    // (ver nota en gemini.service.ts extraerFacturaDeImagen): volvemos a
+    // transcribir + extraer como dos round-trips secuenciales, porque en
+    // comprobantes manuscritos perdía precisión (items y fecha).
     const convertida = await convertirImagenAWebp(file.buffer, mimeType);
     const bufferASubir = convertida?.buffer ?? file.buffer;
     const mimeASubir = convertida?.mimetype ?? mimeType;
@@ -523,8 +525,8 @@ export class FacturasService {
       ? `telegram_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`
       : nombreArchivo;
 
-    const [datosExtraidos] = await Promise.all([
-      this.gemini.extraerFacturaDeImagen(file.buffer, mimeType),
+    const [textoTranscrito] = await Promise.all([
+      this.gemini.transcribirImagenODocumento(file.buffer, mimeType),
       this.supabase
         .getClient()
         .storage.from(BUCKET)
@@ -535,6 +537,7 @@ export class FacturasService {
           }
         }),
     ]);
+    const datosExtraidos = await this.gemini.extraerFactura(textoTranscrito, false);
     const factura = normalizarFactura(datosExtraidos);
 
     const { comprobante, pago } = await this.gastosService.adjuntarComprobante(

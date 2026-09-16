@@ -210,12 +210,16 @@ export class GeminiService {
         return this.parsearRespuestaJson(raw);
     }
 
-    // Combina en UNA sola llamada a Gemini lo que antes eran dos pasos
-    // secuenciales (transcribirImagenODocumento + extraerFactura): lee la
-    // imagen/documento y devuelve directamente el JSON estructurado. Reduce
-    // a la mitad el tiempo de esta parte del pipeline (un solo round-trip al
-    // modelo en vez de dos), que es la parte más lenta de todo el flujo de
-    // captura por Telegram.
+    // DEPRECADO para el flujo normal de captura de imagen/documento: combina
+    // en UNA sola llamada a Gemini lo que antes eran dos pasos secuenciales
+    // (transcribirImagenODocumento + extraerFactura). Se revirtió su uso en
+    // facturas.service.ts porque en comprobantes manuscritos/desordenados
+    // (ej. papeletas a mano) la lectura combinada perdía detalle de items
+    // (cantidades, anotaciones de metraje) y a veces no lograba leer bien la
+    // fecha, cayendo en el fallback silencioso de normalizarFecha (que
+    // guardaba la fecha de hoy como si fuera la fecha real del comprobante).
+    // Se deja el método por si se reutiliza en un contexto donde la latencia
+    // importe más que la precisión, pero NO usar para el pipeline principal.
     async extraerFacturaDeImagen(buffer: Buffer, mimeType: string): Promise<FacturaExtraida> {
         const raw = await this.generateContent(
             [
