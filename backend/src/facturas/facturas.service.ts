@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { UsuarioLockService } from '../common/usuario-lock.service';
 import { GeminiService } from '../ia/gemini.service';
+import type { FacturaExtraida } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
 import { GastosService } from '../gastos/gastos.service';
 import { convertirImagenAWebp } from './imagen.util';
@@ -91,12 +92,19 @@ export class FacturasService {
       .toString(36)
       .slice(2, 8)}.${ext}`;
 
-    // 1. Subir el archivo original a Supabase Storage (igual que "Guardar Imagen1").
+    // 1. Subir el archivo original a Supabase Storage (igual que "Guardar Imagen1")
     //    Si es una imagen (no PDF/doc), se convierte a WebP antes de subir
     //    para ahorrar espacio en el bucket; el buffer original (sin
     //    convertir) se sigue usando para Gemini más abajo, no se pierde
     //    calidad para la extracción.
+    //
+    // OPTIMIZACIÓN DE LATENCIA: antes esto se esperaba (await) completo antes
+    // de siquiera empezar a llamar a Gemini, aunque son dos operaciones
+    // independientes (Gemini usa el buffer ORIGINAL, no el que se sube a
+    // Storage) -- el usuario esperaba la suma de ambos tiempos en vez del
+    // máximo. Ahora ambas corren en paralelo con Promise.all.
     let nombreArchivoFinal = nombreArchivo;
+    let subidaStorage: Promise<void> = Promise.resolve();
     if (!esAudio) {
       const convertida = await convertirImagenAWebp(file.buffer, mimeType);
       const bufferASubir = convertida?.buffer ?? file.buffer;
@@ -105,29 +113,50 @@ export class FacturasService {
         nombreArchivoFinal = `web_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
       }
 
-      const { error: uploadError } = await this.supabase
+      subidaStorage = this.supabase
         .getClient()
         .storage.from(BUCKET)
         .upload(nombreArchivoFinal, bufferASubir, {
           contentType: mimeASubir,
           upsert: true,
+        })
+        .then(({ error: uploadError }) => {
+          if (uploadError) {
+            throw new InternalServerErrorException(
+              `Error subiendo el archivo: ${uploadError.message}`,
+            );
+          }
         });
-      if (uploadError) {
-        throw new InternalServerErrorException(
-          `Error subiendo el archivo: ${uploadError.message}`,
-        );
-      }
     }
 
-    // 2. Transcribir con Gemini (imagen/documento u audio)
-    const texto = esAudio
-      ? await this.gemini.transcribirAudio(file.buffer, mimeType)
-      : await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
+    // 2+3. Transcribir + extraer con Gemini.
+    // OPTIMIZACIÓN DE LATENCIA: para imagen/documento, antes esto eran DOS
+    // llamadas secuenciales a Gemini (transcribirImagenODocumento -> texto
+    // plano, y luego extraerFactura -> JSON), es decir dos round-trips
+    // completos al modelo, uno esperando al otro. Ahora es una sola llamada
+    // multimodal que lee la imagen y devuelve el JSON estructurado
+    // directamente (ver GeminiService.extraerFacturaDeImagen), cortando a la
+    // mitad el tiempo de esta parte del pipeline. El audio sigue en dos
+    // pasos porque usa un prompt distinto pensado para lenguaje hablado.
+    const resultado = esAudio
+      ? await this.procesarTextoExtraido(
+        await this.gemini.transcribirAudio(file.buffer, mimeType),
+        usuarioId,
+        origen,
+        true,
+        null,
+      )
+      : await (async () => {
+        const datosExtraidos = await this.gemini.extraerFacturaDeImagen(file.buffer, mimeType);
+        await subidaStorage; // recién acá hace falta que el upload haya terminado (para archivoInfo)
+        return this.procesarDatosExtraidos(datosExtraidos, usuarioId, origen, false, {
+          ext,
+          nombreArchivoFinal,
+        });
+      })();
 
-    return this.procesarTextoExtraido(texto, usuarioId, origen, esAudio, {
-      ext,
-      nombreArchivoFinal,
-    });
+    await subidaStorage; // por si la rama de audio terminó antes que un upload que no aplica (no-op)
+    return resultado;
   }
 
   // Registro por texto libre en Telegram (RF pendiente del documento de
@@ -163,7 +192,23 @@ export class FacturasService {
   ) {
     // 3. Extraer datos estructurados con Gemini (prompt distinto si es audio)
     const datosExtraidos = await this.gemini.extraerFactura(texto, esAudio);
+    return this.procesarDatosExtraidos(datosExtraidos, usuarioId, origen, esAudio, archivoInfo, esTextoLibre);
+  }
 
+  // Punto de entrada común a partir del paso 4 (normalizar), usado tanto por
+  // procesarTextoExtraido (audio/texto libre, que sí necesitan el paso 3 de
+  // arriba) como por procesarArchivoIndividual para imágenes/documentos, que
+  // desde el cambio de "una sola llamada a Gemini" (ver gemini.service.ts
+  // extraerFacturaDeImagen) ya llegan con `datosExtraidos` listo, sin pasar
+  // por transcripción + extracción como dos llamadas separadas.
+  private async procesarDatosExtraidos(
+    datosExtraidos: FacturaExtraida,
+    usuarioId: number,
+    origen: 'web' | 'telegram',
+    esAudio: boolean,
+    archivoInfo: { ext: string; nombreArchivoFinal: string } | null,
+    esTextoLibre = false,
+  ) {
     // 4. Normalizar (fecha, items) igual que "Separar articulos1"
     const factura = normalizarFactura(datosExtraidos);
 
@@ -465,6 +510,12 @@ export class FacturasService {
     // Igual que en procesarArchivoIndividual: si es imagen, se convierte a
     // WebP antes de subir (ahorro de espacio); Gemini sigue leyendo el
     // buffer original más abajo.
+    //
+    // Mismas dos optimizaciones de latencia que en procesarArchivoIndividual:
+    // (1) el upload a Storage corre en paralelo con Gemini en vez de
+    // bloquear antes (son independientes), y (2) una sola llamada
+    // multimodal a Gemini (extraerFacturaDeImagen) en vez de transcribir y
+    // extraer como dos round-trips secuenciales.
     const convertida = await convertirImagenAWebp(file.buffer, mimeType);
     const bufferASubir = convertida?.buffer ?? file.buffer;
     const mimeASubir = convertida?.mimetype ?? mimeType;
@@ -472,16 +523,18 @@ export class FacturasService {
       ? `telegram_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`
       : nombreArchivo;
 
-    const { error: uploadError } = await this.supabase
-      .getClient()
-      .storage.from(BUCKET)
-      .upload(nombreArchivoFinal, bufferASubir, { contentType: mimeASubir, upsert: true });
-    if (uploadError) {
-      throw new InternalServerErrorException(`Error subiendo el archivo: ${uploadError.message}`);
-    }
-
-    const texto = await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
-    const datosExtraidos = await this.gemini.extraerFactura(texto, false);
+    const [datosExtraidos] = await Promise.all([
+      this.gemini.extraerFacturaDeImagen(file.buffer, mimeType),
+      this.supabase
+        .getClient()
+        .storage.from(BUCKET)
+        .upload(nombreArchivoFinal, bufferASubir, { contentType: mimeASubir, upsert: true })
+        .then(({ error: uploadError }) => {
+          if (uploadError) {
+            throw new InternalServerErrorException(`Error subiendo el archivo: ${uploadError.message}`);
+          }
+        }),
+    ]);
     const factura = normalizarFactura(datosExtraidos);
 
     const { comprobante, pago } = await this.gastosService.adjuntarComprobante(

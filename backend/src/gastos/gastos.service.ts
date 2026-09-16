@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException, NotFoundException } from '@ne
 import { SupabaseService } from '../common/supabase.service';
 import { ProveedoresService } from '../proveedores/proveedores.service';
 import { convertirImagenAWebp } from '../facturas/imagen.util';
+import { GastosGateway } from './gastos.gateway';
 
 // Mismo bucket que usa facturas.service.ts para las evidencias que llegan
 // por Telegram/upload -- se repite acá (en vez de importar desde
@@ -126,6 +127,7 @@ export class GastosService {
     constructor(
         private supabase: SupabaseService,
         private proveedoresService: ProveedoresService,
+        private gateway: GastosGateway,
     ) { }
 
     // Crea un gasto y, si vienen, su comprobante, evidencia, pago y detalle
@@ -165,6 +167,8 @@ export class GastosService {
         if (errorGasto) {
             throw new InternalServerErrorException(`Error creando el gasto: ${errorGasto.message}`);
         }
+
+        this.gateway.notificarCambio(gasto.empresa_id, gasto.id, 'creado');
 
         let comprobante: any = null;
         if (params.comprobante) {
@@ -667,15 +671,18 @@ export class GastosService {
 
     // El usuario confirmó que NO es un duplicado: limpia la marca.
     async descartarDuplicado(gastoId: number) {
-        const { error } = await this.supabase
+        const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
             .update({ posible_duplicado_de: null, pendiente_revision: false })
-            .eq('id', gastoId);
+            .eq('id', gastoId)
+            .select('empresa_id')
+            .single();
 
         if (error) {
             throw new InternalServerErrorException(`Error descartando duplicado: ${error.message}`);
         }
+        this.gateway.notificarCambio(data?.empresa_id, gastoId, 'actualizado');
     }
 
     // El usuario confirmó que SÍ era el mismo pago (botón "dup_si"): a
@@ -686,15 +693,18 @@ export class GastosService {
     // se apagara, este gasto quedaría para siempre en cualquier vista futura
     // de "pendientes de revisar" (RF-20) aunque ya esté resuelto.
     async confirmarDuplicado(gastoId: number) {
-        const { error } = await this.supabase
+        const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
             .update({ pendiente_revision: false })
-            .eq('id', gastoId);
+            .eq('id', gastoId)
+            .select('empresa_id')
+            .single();
 
         if (error) {
             throw new InternalServerErrorException(`Error confirmando duplicado: ${error.message}`);
         }
+        this.gateway.notificarCambio(data?.empresa_id, gastoId, 'actualizado');
     }
 
     // Marca un gasto como confirmado por el usuario (sube su confianza a
@@ -766,6 +776,7 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error confirmando el gasto: ${error.message}`);
         }
+        this.gateway.notificarCambio(gasto.empresa_id, gastoId, 'actualizado');
         return gasto;
     }
 
@@ -1019,6 +1030,7 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error actualizando el gasto: ${error.message}`);
         }
+        this.gateway.notificarCambio(data.empresa_id, gastoId, 'actualizado');
 
         // Si el usuario corrigió/asignó la categoría a mano desde el panel
         // web, esa corrección debe alimentar la sugerencia del proveedor
@@ -1119,7 +1131,7 @@ export class GastosService {
     // filas hijas (comprobante + items, pagos, evidencias) para que no quede
     // basura huérfana en esas tablas.
     async rechazar(gastoId: number) {
-        await this.obtenerPorId(gastoId); // 404 si no existe
+        const gasto = await this.obtenerPorId(gastoId); // 404 si no existe
 
         const client = this.supabase.getClient();
 
@@ -1139,6 +1151,7 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error rechazando el gasto: ${error.message}`);
         }
+        this.gateway.notificarCambio(gasto.empresa_id, gastoId, 'eliminado');
         return { success: true as const };
     }
 

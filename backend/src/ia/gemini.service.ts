@@ -65,6 +65,16 @@ Debes devolver las respuestas siempre en espanol. Responde UNICAMENTE con un obj
 
 ${JSON_SCHEMA}`;
 
+// Variante de SYSTEM_PROMPT_EXTRACCION_FACTURA para leer DIRECTO desde la
+// imagen/documento en una sola llamada a Gemini, en vez de transcribir texto
+// primero y extraer después (dos llamadas). Mismas reglas de extracción,
+// solo cambia la fuente (imagen adjunta en vez de texto ya transcrito) --
+// ver GeminiService.extraerFacturaDeImagen.
+const SYSTEM_PROMPT_EXTRACCION_FACTURA_IMAGEN = SYSTEM_PROMPT_EXTRACCION_FACTURA.replace(
+    'Eres un asistente experto en extraer toda la informacion relevante de facturas o recibos de compra ya transcritos.',
+    'Eres un asistente experto en leer facturas o recibos de compra directamente desde la imagen o documento adjunto (no viene texto ya transcrito: léelo tú mismo de la imagen), y extraer toda la informacion relevante.',
+);
+
 // Prompt para texto que viene de un AUDIO (persona describiendo una compra en voz alta).
 const SYSTEM_PROMPT_EXTRACCION_AUDIO = `Eres un asistente experto en extraer informacion de gastos a partir de la transcripcion de un audio donde una persona describe, hablando de forma libre y coloquial, una compra o gasto que hizo. NO es una factura escaneada: es lenguaje natural, puede tener muletillas, montos redondeados o aproximados, y datos incompletos.
 
@@ -197,7 +207,27 @@ export class GeminiService {
             [{ text: `${systemPrompt}\n\nTexto a analizar:\n"""${texto}"""` }],
             { responseMimeType: 'application/json' },
         );
+        return this.parsearRespuestaJson(raw);
+    }
 
+    // Combina en UNA sola llamada a Gemini lo que antes eran dos pasos
+    // secuenciales (transcribirImagenODocumento + extraerFactura): lee la
+    // imagen/documento y devuelve directamente el JSON estructurado. Reduce
+    // a la mitad el tiempo de esta parte del pipeline (un solo round-trip al
+    // modelo en vez de dos), que es la parte más lenta de todo el flujo de
+    // captura por Telegram.
+    async extraerFacturaDeImagen(buffer: Buffer, mimeType: string): Promise<FacturaExtraida> {
+        const raw = await this.generateContent(
+            [
+                { inline_data: { mime_type: mimeType, data: buffer.toString('base64') } },
+                { text: SYSTEM_PROMPT_EXTRACCION_FACTURA_IMAGEN },
+            ],
+            { responseMimeType: 'application/json' },
+        );
+        return this.parsearRespuestaJson(raw);
+    }
+
+    private parsearRespuestaJson(raw: string): FacturaExtraida {
         const limpio = raw
             .trim()
             .replace(/^```json/i, '')
