@@ -1,4 +1,4 @@
-import { IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { ESTADOS_PEDIDO, EstadoPedido } from '../pedidos.service';
 
 // Todos opcionales: el panel manda solo lo que cambió (mismo criterio que
@@ -21,4 +21,14 @@ export class ActualizarPedidoDto {
     @IsOptional()
     @IsIn(ESTADOS_PEDIDO, { message: `El estado debe ser uno de: ${ESTADOS_PEDIDO.join(', ')}.` })
     estado?: EstadoPedido;
+
+    // Celular peruano (9 dígitos, empieza con 9). null = sin celular.
+    @IsOptional()
+    @Matches(/^9\d{8}$/, { message: 'El celular debe tener 9 dígitos y empezar con 9.' })
+    celular?: string | null;
+
+    // YYYY-MM-DD. null = sin fecha de culminación.
+    @IsOptional()
+    @IsDateString({ strict: true }, { message: 'La fecha de culminación debe tener formato YYYY-MM-DD.' })
+    fecha_culminacion?: string | null;
 }
