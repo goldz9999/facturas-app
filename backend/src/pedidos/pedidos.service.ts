@@ -18,6 +18,8 @@ export interface Pedido {
     cliente: string | null;
     presupuesto: number | null;
     estado: EstadoPedido;
+    celular: string | null;
+    fecha_culminacion: string | null;
     creado_en: string;
 }
 
@@ -36,7 +38,7 @@ export interface PedidoConResumen extends Pedido {
 export class PedidosService {
     constructor(private supabase: SupabaseService) { }
 
-    private readonly COLUMNAS = 'id, empresa_id, nombre, cliente, presupuesto, estado, creado_en';
+    private readonly COLUMNAS = 'id, empresa_id, nombre, cliente, presupuesto, estado, celular, fecha_culminacion, creado_en';
 
     // Listado con costo consolidado de cada pedido. El SUM se hace acá (no
     // en React) trayendo los montos de los gastos de esos pedidos en una
@@ -142,7 +144,14 @@ export class PedidosService {
     }
 
     async crear(
-        datos: { nombre: string; cliente?: string | null; presupuesto?: number | null; estado?: EstadoPedido },
+        datos: {
+            nombre: string;
+            cliente?: string | null;
+            presupuesto?: number | null;
+            estado?: EstadoPedido;
+            celular?: string | null;
+            fecha_culminacion?: string | null;
+        },
         empresaId: number,
     ): Promise<Pedido> {
         const nombre = (datos.nombre ?? '').trim();
@@ -159,6 +168,8 @@ export class PedidosService {
                 cliente: datos.cliente?.trim() || null,
                 presupuesto: datos.presupuesto ?? null,
                 estado: datos.estado ?? 'activo',
+                celular: datos.celular?.trim() || null,
+                fecha_culminacion: datos.fecha_culminacion || null,
             })
             .select(this.COLUMNAS)
             .single();
@@ -174,7 +185,14 @@ export class PedidosService {
 
     async actualizar(
         id: number,
-        cambios: Partial<{ nombre: string; cliente: string | null; presupuesto: number | null; estado: EstadoPedido }>,
+        cambios: Partial<{
+            nombre: string;
+            cliente: string | null;
+            presupuesto: number | null;
+            estado: EstadoPedido;
+            celular: string | null;
+            fecha_culminacion: string | null;
+        }>,
         empresaId: number,
     ): Promise<Pedido> {
         const update: Record<string, any> = {};
@@ -186,6 +204,8 @@ export class PedidosService {
         if (cambios.cliente !== undefined) update.cliente = cambios.cliente?.trim() || null;
         if (cambios.presupuesto !== undefined) update.presupuesto = cambios.presupuesto;
         if (cambios.estado !== undefined) update.estado = cambios.estado;
+        if (cambios.celular !== undefined) update.celular = cambios.celular?.trim() || null;
+        if (cambios.fecha_culminacion !== undefined) update.fecha_culminacion = cambios.fecha_culminacion || null;
 
         if (Object.keys(update).length === 0) {
             return this.obtenerPorId(id, empresaId);
