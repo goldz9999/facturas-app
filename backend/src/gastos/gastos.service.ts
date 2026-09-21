@@ -21,13 +21,28 @@ const BUCKET = 'Facturas';
 //   super_admin).
 type EmpresaFiltro = number | number[];
 
-function aplicarFiltroEmpresa<T extends { eq: Function; in: Function }>(query: T, empresaId?: EmpresaFiltro): T {
-    if (empresaId === undefined) return query;
+function aplicarFiltroEmpresa<T extends { eq: Function; in: Function }>(query: T, empresaId?: EmpresaFiltro | null): T {
+    if (empresaId === undefined || empresaId === null) return query;
     if (Array.isArray(empresaId)) {
-        return empresaId.length > 0 ? (query.in('empresa_id', empresaId) as T) : query;
+        // Hallazgo 38.3: un array vacío NO es "sin filtro" -- es "no tiene
+        // acceso a ninguna empresa". Antes esto devolvía `query` tal cual
+        // (sin ningún .eq/.in), así que un usuario sin empresas asignadas
+        // veía los gastos de TODAS las empresas. resolverEmpresaIdFiltro ya
+        // rechaza este caso antes de llegar acá (403), pero se blinda acá
+        // también por si algún llamador interno pasa [] a mano: se fuerza
+        // un id imposible para que el resultado sea siempre vacío, nunca
+        // "todo".
+        return empresaId.length > 0 ? (query.in('empresa_id', empresaId) as T) : (query.in('empresa_id', [-1]) as T);
     }
     return query.eq('empresa_id', empresaId) as T;
 }
+
+// Paso 38.1: valida que un gasto exista y pertenezca a la empresa del que
+// llama ANTES de tocar nada -- mismo criterio que obtenerPorId (404, no
+// 403, para no confirmarle a alguien de otra empresa que el id existe).
+// Usado por los cuatro PATCH que antes no validaban empresa (Hallazgo
+// 37.4-A: confirmar-confianza, confirmar-duplicado, descartar-duplicado,
+// rechazar).
 
 function perteneceAFiltroEmpresa(empresaIdGasto: number | null, filtro: EmpresaFiltro): boolean {
     return Array.isArray(filtro) ? filtro.includes(empresaIdGasto as number) : empresaIdGasto === filtro;
@@ -673,14 +688,19 @@ export class GastosService {
     }
 
     // El usuario confirmó que NO es un duplicado: limpia la marca.
-    async descartarDuplicado(gastoId: number) {
-        const { data, error } = await this.supabase
+    // empresaId opcional (Paso 38.1): las llamadas internas desde Telegram
+    // (callback dup_no) no lo pasan -- ahí la validación de dueño ya existe
+    // por otro mecanismo (esDuenoDelGasto).
+    async descartarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null) {
+        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+
+        let query = this.supabase
             .getClient()
             .from('gastos')
             .update({ posible_duplicado_de: null, pendiente_revision: false })
-            .eq('id', gastoId)
-            .select('empresa_id')
-            .single();
+            .eq('id', gastoId);
+        query = aplicarFiltroEmpresa(query as any, empresaId) as any; // defensa extra ante una carrera
+        const { data, error } = await query.select('empresa_id').single();
 
         if (error) {
             throw new InternalServerErrorException(`Error descartando duplicado: ${error.message}`);
@@ -695,14 +715,16 @@ export class GastosService {
     // apaga es `pendiente_revision`, porque una persona ya lo validó; si no
     // se apagara, este gasto quedaría para siempre en cualquier vista futura
     // de "pendientes de revisar" (RF-20) aunque ya esté resuelto.
-    async confirmarDuplicado(gastoId: number) {
-        const { data, error } = await this.supabase
+    async confirmarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null) {
+        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+
+        let query = this.supabase
             .getClient()
             .from('gastos')
             .update({ pendiente_revision: false })
-            .eq('id', gastoId)
-            .select('empresa_id')
-            .single();
+            .eq('id', gastoId);
+        query = aplicarFiltroEmpresa(query as any, empresaId) as any;
+        const { data, error } = await query.select('empresa_id').single();
 
         if (error) {
             throw new InternalServerErrorException(`Error confirmando duplicado: ${error.message}`);
@@ -768,14 +790,16 @@ export class GastosService {
         return gasto;
     }
 
-    async confirmarConfianza(gastoId: number) {
-        const { data: gasto, error } = await this.supabase
+    async confirmarConfianza(gastoId: number, empresaId?: EmpresaFiltro | null) {
+        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+
+        let query = this.supabase
             .getClient()
             .from('gastos')
             .update({ confianza: 'alta', pendiente_revision: false })
-            .eq('id', gastoId)
-            .select('*')
-            .single();
+            .eq('id', gastoId);
+        query = aplicarFiltroEmpresa(query as any, empresaId) as any;
+        const { data: gasto, error } = await query.select('*').single();
         if (error) {
             throw new InternalServerErrorException(`Error confirmando el gasto: ${error.message}`);
         }
@@ -1255,8 +1279,11 @@ export class GastosService {
     // nada vía confirmar/descartar-duplicado). Acá se borra el gasto y sus
     // filas hijas (comprobante + items, pagos, evidencias) para que no quede
     // basura huérfana en esas tablas.
-    async rechazar(gastoId: number) {
-        const gasto = await this.obtenerPorId(gastoId); // 404 si no existe
+    // empresaId opcional para no romper el resto del código si algo interno
+    // llama a esto sin pasar empresa -- pero el controller HTTP (único
+    // caller real, botón "X" de ReviewInbox) SIEMPRE lo pasa desde ahora.
+    async rechazar(gastoId: number, empresaId?: EmpresaFiltro | null) {
+        const gasto = await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
 
         const client = this.supabase.getClient();
 

@@ -49,14 +49,24 @@ export function resolverEmpresaId(
 // (undefined = sin filtro); admin/empleado sin query ve todas las
 // empresas a las que tiene acceso (empresaIds completo, como filtro "IN");
 // con query, se acota a esa sola si el usuario tiene acceso a ella.
+// Paso 38: el super_admin ya NO tiene vista global ("todas las empresas
+// mezcladas") -- opera sobre una sola empresa a la vez, igual que
+// resolverEmpresaId, y ?empresa_id= pasa a ser obligatorio para él (antes
+// era opcional y, sin mandarlo, devolvía `undefined` = sin filtro = veía
+// todo). Ya nunca devuelve `undefined`, así que ningún endpoint de gastos
+// puede quedar sin filtro de empresa.
 export function resolverEmpresaIdFiltro(
     req: { user: { rol: string; empresa_ids: number[] } },
     empresaIdQuery?: string,
-): number | number[] | undefined {
+): number | number[] {
     const empresaIds = req.user.empresa_ids ?? [];
 
     if (req.user.rol === 'super_admin') {
-        return empresaIdQuery ? Number(empresaIdQuery) : undefined;
+        const id = empresaIdQuery ? Number(empresaIdQuery) : NaN;
+        if (!id || !Number.isInteger(id) || id <= 0) {
+            throw new BadRequestException('Como super_admin, indica ?empresa_id= para elegir una empresa.');
+        }
+        return id;
     }
 
     if (empresaIdQuery) {
@@ -65,6 +75,14 @@ export function resolverEmpresaIdFiltro(
             throw new ForbiddenException('No tienes acceso a esa empresa.');
         }
         return id;
+    }
+
+    // Hallazgo 38.3: un admin/empleado sin ninguna empresa asignada
+    // (empresa_ids = []) devolvía [] acá, y aplicarFiltroEmpresa trataba
+    // un array vacío como "sin filtro" -- veía los gastos de TODAS las
+    // empresas. Ahora se rechaza antes de llegar a esa función.
+    if (empresaIds.length === 0) {
+        throw new ForbiddenException('Tu usuario no tiene ninguna empresa asignada.');
     }
     return empresaIds;
 }

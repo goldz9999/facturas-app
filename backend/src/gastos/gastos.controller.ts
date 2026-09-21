@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiQuery } from '@nestjs/swagger';
 import { GastosService, FiltrosGastos, DatosPago } from './gastos.service';
@@ -56,12 +56,21 @@ export class GastosController {
         return this.gastosService.listar(filtros, empresaId);
     }
 
+    // Hallazgo 37.4-A: exponía los últimos gastos de CUALQUIER usuarioId a
+    // cualquier usuario autenticado (nadie lo llamaba desde el frontend,
+    // pero el endpoint existía sin protección). Ahora solo el propio
+    // usuario puede consultar sus últimos gastos -- ni siquiera super_admin
+    // consulta los de otro por acá.
     @ApiQuery({ name: 'limite', required: false, type: Number })
     @Get('usuario/:usuarioId/ultimos')
     async ultimosPorUsuario(
         @Param('usuarioId', ParseIntPipe) usuarioId: number,
         @Query('limite') limite?: string,
+        @Request() req?,
     ) {
+        if (usuarioId !== req.user.id) {
+            throw new ForbiddenException('Solo puedes consultar tus propios últimos gastos.');
+        }
         const n = limite ? parseInt(limite, 10) : 5;
         return this.gastosService.ultimosPorUsuario(usuarioId, n);
     }
@@ -117,34 +126,42 @@ export class GastosController {
     // gasto con confianza media/baja está correcto tal como lo extrajo la
     // IA, sin corregir el monto. Sube confianza a 'alta' y apaga
     // pendiente_revision (ver GastosService.confirmarConfianza, Paso 4.3).
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
     @Patch(':id/confirmar-confianza')
-    async confirmarConfianza(@Param('id', ParseIntPipe) id: number) {
-        return this.gastosService.confirmarConfianza(id);
+    async confirmarConfianza(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.confirmarConfianza(id, empresaId);
     }
 
     // Vista de duplicados (DuplicatesReview.jsx): el usuario confirma que sí
     // es el mismo pago que ya registró otro usuario. No borra la marca
     // (posible_duplicado_de queda para trazabilidad), solo apaga
     // pendiente_revision (ver GastosService.confirmarDuplicado, Paso 4.2).
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
     @Patch(':id/confirmar-duplicado')
-    async confirmarDuplicado(@Param('id', ParseIntPipe) id: number) {
-        return this.gastosService.confirmarDuplicado(id);
+    async confirmarDuplicado(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.confirmarDuplicado(id, empresaId);
     }
 
     // Vista de duplicados: el usuario confirma que NO es el mismo pago (dos
     // gastos distintos que solo coincidían en monto/fecha). Limpia la marca
     // por completo (ver GastosService.descartarDuplicado, Paso 4.2).
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
     @Patch(':id/descartar-duplicado')
-    async descartarDuplicado(@Param('id', ParseIntPipe) id: number) {
-        return this.gastosService.descartarDuplicado(id);
+    async descartarDuplicado(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.descartarDuplicado(id, empresaId);
     }
 
     // Botón "X" de ReviewInbox.jsx: el usuario descarta un gasto mal
     // capturado (no es un duplicado, es basura/error de lectura). Borra el
     // gasto y sus filas hijas (ver GastosService.rechazar).
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
     @Patch(':id/rechazar')
-    async rechazar(@Param('id', ParseIntPipe) id: number) {
-        return this.gastosService.rechazar(id);
+    async rechazar(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.rechazar(id, empresaId);
     }
 
     @Post(':id/comprobante')

@@ -14,10 +14,16 @@ import { CommonModule } from '../common/common.module';
         JwtModule.registerAsync({
             imports: [ConfigModule],
             inject: [ConfigService],
-            useFactory: (config: ConfigService) => ({
-                secret: config.get<string>('JWT_SECRET') ?? 'dev-secret-cambiar-en-produccion',
-                signOptions: { expiresIn: '8h' },
-            }),
+            useFactory: (config: ConfigService) => {
+                // Mismo fix que jwt.strategy.ts -- sin fallback inseguro.
+                const secret = config.get<string>('JWT_SECRET');
+                if (!secret) {
+                    throw new Error(
+                        'Falta la variable de entorno JWT_SECRET. Definila antes de arrancar el backend (ver .env.example).',
+                    );
+                }
+                return { secret, signOptions: { expiresIn: '8h' } };
+            },
         }),
     ],
     controllers: [AuthController],
