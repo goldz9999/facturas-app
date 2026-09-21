@@ -43,6 +43,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             rol: usuario.rol,
             empresa_ids: usuario.empresa_ids,
             puede_registrar_personal: usuario.puede_registrar_personal,
+            ultima_empresa_id: usuario.ultima_empresa_id,
         };
     }
 }

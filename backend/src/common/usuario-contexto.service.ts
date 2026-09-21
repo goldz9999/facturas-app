@@ -8,6 +8,7 @@ export interface UsuarioContexto {
     activo: boolean;
     empresa_ids: number[];
     puede_registrar_personal: boolean;
+    ultima_empresa_id: number | null;
 }
 
 // Paso 44: fuente única de "quién es este usuario AHORA". Antes,
@@ -28,7 +29,7 @@ export class UsuarioContextoService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, email, rol, activo, puede_registrar_personal, usuario_empresas(empresa_id)')
+            .select('id, email, rol, activo, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id)')
             .eq('id', usuarioId)
             .maybeSingle();
 
@@ -41,6 +42,7 @@ export class UsuarioContextoService {
             rol: data.rol,
             activo: data.activo,
             puede_registrar_personal: data.puede_registrar_personal,
+            ultima_empresa_id: data.ultima_empresa_id ?? null,
             empresa_ids: (data.usuario_empresas ?? []).map((e: { empresa_id: number }) => e.empresa_id),
         };
     }

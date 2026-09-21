@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
@@ -11,6 +11,7 @@ export interface UsuarioAutenticado {
     rol: string;
     empresa_ids: number[];
     puede_registrar_personal: boolean;
+    ultima_empresa_id: number | null;
 }
 
 @Injectable()
@@ -27,7 +28,7 @@ export class AuthService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, password_hash, rol, activo, puede_registrar_personal, usuario_empresas(empresa_id)')
+            .select('id, nombre, email, password_hash, rol, activo, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id)')
             .eq('email', dto.email)
             .maybeSingle();
 
@@ -55,6 +56,7 @@ export class AuthService {
             rol: data.rol,
             empresa_ids: (data.usuario_empresas ?? []).map((e: { empresa_id: number }) => e.empresa_id),
             puede_registrar_personal: data.puede_registrar_personal,
+            ultima_empresa_id: data.ultima_empresa_id ?? null,
         };
 
         const access_token = await this.jwtService.signAsync({
@@ -66,5 +68,36 @@ export class AuthService {
         });
 
         return { access_token, usuario };
+    }
+
+    // Guarda la última empresa activa del usuario para recordarla entre
+    // navegadores/dispositivos. Valida el acceso igual que el resto de la
+    // API: super_admin puede elegir cualquier empresa existente; los demás
+    // solo entre las suyas (empresa_ids viene de la base, ver Paso 44).
+    async establecerEmpresaActiva(
+        usuario: { id: number; rol: string; empresa_ids: number[] },
+        empresaId: number,
+    ): Promise<{ ultima_empresa_id: number }> {
+        if (usuario.rol === 'super_admin') {
+            const { data, error } = await this.supabaseService
+                .getClient()
+                .from('empresas')
+                .select('id')
+                .eq('id', empresaId)
+                .maybeSingle();
+            if (error) throw new Error(`Error consultando empresas: ${error.message}`);
+            if (!data) throw new NotFoundException('Esa empresa no existe.');
+        } else if (!usuario.empresa_ids.includes(empresaId)) {
+            throw new ForbiddenException('No tienes acceso a esa empresa.');
+        }
+
+        const { error } = await this.supabaseService
+            .getClient()
+            .from('usuarios')
+            .update({ ultima_empresa_id: empresaId })
+            .eq('id', usuario.id);
+        if (error) throw new Error(`Error guardando la empresa activa: ${error.message}`);
+
+        return { ultima_empresa_id: empresaId };
     }
 }
