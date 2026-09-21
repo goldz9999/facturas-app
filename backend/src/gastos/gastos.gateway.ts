@@ -9,6 +9,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import * as jwt from 'jsonwebtoken';
 import { corsOriginCallback } from '../common/cors.util';
+import { UsuarioContextoService } from '../common/usuario-contexto.service';
 
 // Notifica a los clientes conectados cuando cambia algo en `gastos`, para que
 // el frontend (useGastosRealtime) refresque sin tener que hacer polling.
@@ -40,9 +41,12 @@ export class GastosGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     private readonly logger = new Logger(GastosGateway.name);
 
-    constructor(private config: ConfigService) { }
+    constructor(
+        private config: ConfigService,
+        private usuarioContexto: UsuarioContextoService,
+    ) { }
 
-    handleConnection(client: Socket) {
+    async handleConnection(client: Socket) {
         try {
             const token =
                 (client.handshake.auth?.token as string) ||
@@ -60,8 +64,6 @@ export class GastosGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
             const payload = jwt.verify(token, secret) as unknown as {
                 sub: number;
-                rol: string;
-                empresa_ids: number[];
             };
 
             const empresaIdRaw = client.handshake.auth?.empresa_id;
@@ -70,8 +72,13 @@ export class GastosGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 throw new Error('Falta empresa_id válido en la conexión');
             }
 
-            const empresaIds = payload.empresa_ids ?? [];
-            if (payload.rol !== 'super_admin' && !empresaIds.includes(empresaId)) {
+            // Paso 44: rol y empresas se leen de la base, no del token
+            // (mismo criterio que JwtStrategy.validate()).
+            const usuario = await this.usuarioContexto.obtener(payload.sub);
+            if (!usuario || !usuario.activo) {
+                throw new Error('Usuario inexistente o desactivado');
+            }
+            if (usuario.rol !== 'super_admin' && !usuario.empresa_ids.includes(empresaId)) {
                 throw new Error('No tiene acceso a esa empresa');
             }
 

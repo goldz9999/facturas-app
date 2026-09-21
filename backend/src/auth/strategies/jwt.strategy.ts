@@ -1,11 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { UsuarioContextoService } from '../../common/usuario-contexto.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-    constructor(config: ConfigService) {
+    constructor(config: ConfigService, private usuarioContexto: UsuarioContextoService) {
         // Hallazgo 37.4-B: antes, si faltaba la variable de entorno
         // JWT_SECRET, se usaba 'dev-secret-cambiar-en-produccion' -- un
         // valor público (está en este mismo archivo del repo). Cualquiera
@@ -26,20 +27,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         });
     }
 
-    async validate(payload: {
-        sub: number;
-        email: string;
-        rol: string;
-        empresa_ids: number[];
-        puede_registrar_personal: boolean;
-    }) {
+    // Paso 44: el token solo identifica al usuario (`sub`); rol,
+    // empresa_ids y puede_registrar_personal se leen de la base en cada
+    // request, así que un cambio de accesos (o desactivar al usuario)
+    // rige de inmediato, sin esperar a que expire el token.
+    async validate(payload: { sub: number }) {
+        const usuario = await this.usuarioContexto.obtener(payload.sub);
+        if (!usuario || !usuario.activo) {
+            throw new UnauthorizedException('Sesión inválida o usuario desactivado');
+        }
         // Lo que retorna aquí queda disponible como req.user en los controllers.
         return {
-            id: payload.sub,
-            email: payload.email,
-            rol: payload.rol,
-            empresa_ids: payload.empresa_ids ?? [],
-            puede_registrar_personal: payload.puede_registrar_personal,
+            id: usuario.id,
+            email: usuario.email,
+            rol: usuario.rol,
+            empresa_ids: usuario.empresa_ids,
+            puede_registrar_personal: usuario.puede_registrar_personal,
         };
     }
 }
