@@ -1307,6 +1307,35 @@ export class GastosService {
         return { success: true as const };
     }
 
+    // Actualiza el comprobante ya existente de un gasto (panel de Revisión:
+    // corregir tipo/número sin insertar una fila nueva). Si el gasto no
+    // tiene comprobante todavía, inserta uno (mismo comportamiento que
+    // adjuntarComprobante). Usado por PATCH /gastos/:id/comprobante.
+    async actualizarComprobante(gastoId: number, datos: DatosComprobante, empresaId?: EmpresaFiltro | null) {
+        const gasto = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
+        const existente = gasto.comprobantes?.[0];
+
+        if (!existente) {
+            return this.insertarComprobante(gastoId, datos);
+        }
+
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('comprobantes')
+            .update({
+                tipo: datos.tipo ?? existente.tipo,
+                numero: datos.numero ?? null,
+            })
+            .eq('id', existente.id)
+            .select('*')
+            .single();
+
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando el comprobante: ${error.message}`);
+        }
+        return data;
+    }
+
     private async insertarComprobante(gastoId: number, datos: DatosComprobante) {
         const { data, error } = await this.supabase
             .getClient()

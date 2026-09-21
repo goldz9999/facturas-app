@@ -171,6 +171,22 @@ export class GastosController {
         return this.gastosService.adjuntarComprobante(id, body, undefined, undefined, undefined, empresaId);
     }
 
+    // Editar el comprobante desde el panel de Revisión (ReviewDashboard):
+    // a diferencia de POST arriba (que siempre inserta uno nuevo, pensado
+    // para el flujo de Telegram), este actualiza el comprobante existente
+    // del gasto si ya tiene uno, para no dejar filas duplicadas.
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
+    @Patch(':id/comprobante')
+    async actualizarComprobante(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() body: { tipo?: string; numero?: string | null },
+        @Query('empresa_id') empresaIdQuery: string | undefined,
+        @Request() req,
+    ) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
+        return this.gastosService.actualizarComprobante(id, body, empresaId);
+    }
+
     // Botón "Añadir" de Pagos en ExpenseDetail. `medio` es obligatorio (uno
     // de 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro', ver
     // DatosPago); numero_operacion y monto son opcionales.
