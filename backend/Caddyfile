@@ -1,0 +1,7 @@
+# Caddy obtiene y renueva el certificado HTTPS solo (Let's Encrypt) y reenvía
+# automáticamente el upgrade de WebSocket (Socket.IO, namespace /gastos), así
+# que no hace falta configurar nada extra para el tiempo real.
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy backend:3000
+}

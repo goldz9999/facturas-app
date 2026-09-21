@@ -1,0 +1,45 @@
+# Nombre de proyecto fijo: el servidor es compartido con otras apps, así que
+# los contenedores, redes y volúmenes de SIREGG quedan aislados bajo "siregg".
+name: siregg
+
+services:
+  backend:
+    build: .
+    container_name: siregg-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: 3000
+    # Tope de memoria: el servidor tiene ~4 GB compartidos con otras apps.
+    mem_limit: 768m
+    # Solo accesible desde el propio servidor (127.0.0.1), NO desde internet.
+    # Sirve para probar (curl http://127.0.0.1:3100/docs) y como destino de
+    # un proxy que ya exista en el servidor. Si el 3100 estuviera ocupado,
+    # cámbialo por otro puerto libre.
+    ports:
+      - "127.0.0.1:3100:3000"
+
+  # Caddy (HTTPS automático) es OPCIONAL: no arranca con un "up" normal.
+  # Toma los puertos 80 y 443 del servidor, así que actívalo solo cuando
+  # tengas dominio y esos puertos estén confirmados como tuyos:
+  #     docker compose --profile proxy up -d
+  caddy:
+    profiles: ["proxy"]
+    image: caddy:2
+    container_name: siregg-caddy
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Define API_DOMAIN en .env para usar Caddy}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificados: no borrar, evita re-emitirlos
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
