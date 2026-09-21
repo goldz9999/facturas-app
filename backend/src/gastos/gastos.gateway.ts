@@ -8,6 +8,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import * as jwt from 'jsonwebtoken';
+import { corsOriginCallback } from '../common/cors.util';
 
 // Notifica a los clientes conectados cuando cambia algo en `gastos`, para que
 // el frontend (useGastosRealtime) refresque sin tener que hacer polling.
@@ -28,7 +29,9 @@ import * as jwt from 'jsonwebtoken';
 // llamadas REST de siempre (useExpenses). Así evitamos duplicar la lógica de
 // mapeo/permisos de lectura que ya vive en GastosService.listar/obtenerPorId.
 @WebSocketGateway({
-    cors: { origin: '*' }, // ajustar a la URL real del frontend en producción -- ver Hallazgo 37.4-E, sigue pendiente
+    // Hallazgo 37.4-E: antes `origin: '*'` aceptaba cualquier dominio.
+    // Mismo criterio que main.ts (FRONTEND_URL + localhost), ver cors.util.ts.
+    cors: { origin: corsOriginCallback },
     namespace: '/gastos',
 })
 export class GastosGateway implements OnGatewayConnection, OnGatewayDisconnect {

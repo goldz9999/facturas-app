@@ -2,11 +2,15 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { corsOriginCallback } from './common/cors.util';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Hallazgo 37.4-E: antes `origin: true` aceptaba cualquier dominio.
+  // Ahora solo se permite el/los dominio(s) en FRONTEND_URL (ver
+  // cors.util.ts) + localhost para desarrollo.
   app.enableCors({
-    origin: true, // en producción, restringe al dominio de tu frontend
+    origin: corsOriginCallback,
   });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true }));
 
