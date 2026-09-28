@@ -95,9 +95,10 @@ export class GastosController {
         return this.gastosService.contarPorEstado(empresaId);
     }
 
+    @ApiQuery({ name: 'empresa_id', required: false, type: Number })
     @Get(':id')
-    async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
-        const empresaId = resolverEmpresaIdFiltro(req);
+    async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.obtenerPorId(id, empresaId);
     }
 
@@ -116,9 +117,10 @@ export class GastosController {
             // que el pedido sea de la misma empresa del gasto.
             pedido_id?: number | null;
         },
+        @Query('empresa_id') empresaIdQuery: string | undefined,
         @Request() req,
     ) {
-        const empresaId = resolverEmpresaIdFiltro(req);
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.actualizar(id, body, empresaId);
     }
 
@@ -165,9 +167,9 @@ export class GastosController {
     }
 
     @Post(':id/comprobante')
-    async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Request() req) {
+    async adjuntarComprobante(@Param('id', ParseIntPipe) id: number, @Body() body: any, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         if (!id) throw new NotFoundException('Gasto no encontrado');
-        const empresaId = resolverEmpresaIdFiltro(req);
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.adjuntarComprobante(id, body, undefined, undefined, undefined, empresaId);
     }
 
@@ -175,8 +177,8 @@ export class GastosController {
     // de 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro', ver
     // DatosPago); numero_operacion y monto son opcionales.
     @Post(':id/pago')
-    async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago, @Request() req) {
-        const empresaId = resolverEmpresaIdFiltro(req);
+    async agregarPago(@Param('id', ParseIntPipe) id: number, @Body() body: DatosPago, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.insertarPago(id, body, empresaId);
     }
 
@@ -189,10 +191,11 @@ export class GastosController {
     async agregarEvidencia(
         @Param('id', ParseIntPipe) id: number,
         @UploadedFile() file: Express.Multer.File,
+        @Query('empresa_id') empresaIdQuery: string | undefined,
         @Request() req,
     ) {
         if (!file) throw new BadRequestException('No se recibió ningún archivo.');
-        const empresaId = resolverEmpresaIdFiltro(req);
+        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
         return this.gastosService.subirEvidenciaImagen(id, file, empresaId);
     }
 }
