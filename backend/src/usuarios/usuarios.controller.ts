@@ -1,11 +1,19 @@
-import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { esSuperAdmin, resolverRolAlta, validarGestion, validarPermisoPersonal, validarPermisoTelegram } from '../auth/roles-empresa';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Put, Query, Request, UseGuards } from '@nestjs/common';
+import { ArrayNotEmpty, IsArray, IsInt } from 'class-validator';
+import { combinarEmpresas, empresasGestionables, esSuperAdmin, resolverRolAlta, validarGestion, validarPermisoPersonal, validarPermisoTelegram } from '../auth/roles-empresa';
 import { UsuariosService } from './usuarios.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+
+class EmpresasUsuarioDto {
+    @IsArray()
+    @ArrayNotEmpty({ message: 'Elige al menos una empresa.' })
+    @IsInt({ each: true })
+    empresa_ids: number[];
+}
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('usuarios')
@@ -25,6 +33,13 @@ export class UsuariosController {
     // Antes de tocar a otro usuario: debe pertenecer a la empresa activa y no
     // tener más privilegio que quien lo toca (un admin no gestiona propietarios
     // ni super admins).
+    // Empresas en las que quien llama puede dar o quitar acceso: el propietario
+    // en todas; un administrador, en las que administra; el super admin, en todas.
+    private async gestionables(req: any): Promise<number[]> {
+        if (req.user.es_super_admin) return this.usuariosService.idsEmpresasActivas();
+        return empresasGestionables({ empresas: req.user.empresas ?? [] });
+    }
+
     private async verificarGestion(req: any, id: number, empresaId: number): Promise<void> {
         const objetivo = await this.usuariosService.obtenerPorId(id);
         if (!objetivo) throw new NotFoundException(`Usuario ${id} no encontrado`);
@@ -56,7 +71,7 @@ export class UsuariosController {
     // admin solo puede crear empleados/admins para SU PROPIA empresa (empresa_ids del body se ignora).
     @Post()
     @Roles('super_admin', 'admin')
-    crear(@Body() dto: CrearUsuarioDto, @Request() req) {
+    async crear(@Body() dto: CrearUsuarioDto, @Request() req) {
         // Valida que quien crea pueda otorgar ese rol (p. ej. solo un
         // propietario crea propietarios) y deriva el rol legacy.
         const alta = resolverRolAlta(dto, { es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa });
@@ -68,10 +83,15 @@ export class UsuariosController {
             if (dto.rol === 'super_admin') {
                 throw new ForbiddenException('Un admin de empresa no puede crear super_admin');
             }
-            // El nuevo miembro queda SOLO en la empresa activa de quien lo crea
-            // (no en todas las que este administra).
-            const empresaActiva = req.user.empresa_activa_id;
-            return this.usuariosService.crear(dto, empresaActiva != null ? [empresaActiva] : req.user.empresa_ids, alta);
+            // Por defecto el nuevo miembro queda en la empresa activa de quien lo
+            // crea. Si pide más (empresa_ids), solo entre las que administra.
+            const empresaActiva = this.empresaActiva(req);
+            let empresas = [empresaActiva];
+            if (dto.empresa_ids?.length) {
+                const gestionables = await this.gestionables(req);
+                empresas = combinarEmpresas([], dto.empresa_ids, gestionables);
+            }
+            return this.usuariosService.crear(dto, empresas, alta);
         }
         return this.usuariosService.crear(dto, undefined, alta);
     }
@@ -143,6 +163,24 @@ export class UsuariosController {
             return this.usuariosService.actualizar(id, dto, undefined, empresa);
         }
         return this.usuariosService.actualizar(id, dto);
+    }
+
+    // A qué empresas pertenece un miembro de la empresa activa. Solo se tocan las
+    // empresas que quien edita gestiona; las demás del usuario se conservan.
+    // Las empresas nuevas reciben el mismo rol que tiene en la empresa activa.
+    @Put(':id/empresas')
+    @Roles('super_admin', 'admin')
+    async empresas(@Param('id', ParseIntPipe) id: number, @Body() dto: EmpresasUsuarioDto, @Request() req) {
+        const empresaId = this.empresaActiva(req);
+        await this.verificarGestion(req, id, empresaId);
+        const objetivo = (await this.usuariosService.obtenerPorId(id))!;
+        const gestionables = await this.gestionables(req);
+        const final = combinarEmpresas(objetivo.empresa_ids, dto.empresa_ids, gestionables);
+        const rolActual = objetivo.empresas.find((e) => e.empresa_id === empresaId)?.rol ?? 'empleado';
+        // Nadie da el rol propietario por esta vía salvo otro propietario (o super admin).
+        const rolNuevas = rolActual === 'propietario' && !(req.user.es_super_admin || req.user.rol_empresa === 'propietario') ? 'empleado' : rolActual;
+        await this.usuariosService.asignarEmpresas(id, final, rolNuevas);
+        return this.usuariosService.obtenerPorId(id);
     }
 
     @Patch(':id/desactivar')

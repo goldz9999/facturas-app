@@ -47,11 +47,18 @@ export class EmpresasController {
         return this.empresasService.obtenerPorId(id);
     }
 
+    // Solo el propietario (o super admin) crea organizaciones, y queda como su
+    // propietario. Los demás propietarios también la ven (ampliarPropietario).
     @Post()
-    @Roles('super_admin')
+    @Roles('super_admin', 'admin')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 3 * 1024 * 1024 } })) // 3MB
-    crear(@Body() dto: CrearEmpresaDto, @UploadedFile() file?: Express.Multer.File) {
-        return this.empresasService.crear(dto, file);
+    async crear(@Body() dto: CrearEmpresaDto, @Request() req, @UploadedFile() file?: Express.Multer.File) {
+        if (!req.user.es_super_admin && req.user.rol_empresa !== 'propietario') {
+            throw new ForbiddenException('Solo el propietario puede crear organizaciones.');
+        }
+        const empresa = await this.empresasService.crear(dto, file);
+        await this.empresasService.agregarPropietario(empresa.id, req.user.id);
+        return empresa;
     }
 
     // Un administrador/propietario solo puede editar los datos de SU empresa activa

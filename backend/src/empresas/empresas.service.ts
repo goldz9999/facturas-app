@@ -99,8 +99,9 @@ export class EmpresasService {
             .getClient()
             .from('empresas')
             .insert({
-                nombre: dto.nombre,
+                nombre: dto.nombre.trim(),
                 activa: dto.activa ?? true,
+                ruc: dto.ruc || null,
             })
             .select('*')
             .single();
@@ -180,5 +181,14 @@ export class EmpresasService {
             );
         }
         return data;
+    }
+
+    // Quien crea una empresa queda como su propietario.
+    async agregarPropietario(empresaId: number, usuarioId: number): Promise<void> {
+        const { error } = await this.supabase
+            .getClient()
+            .from('usuario_empresas')
+            .upsert({ empresa_id: empresaId, usuario_id: usuarioId, rol: 'propietario' }, { onConflict: 'usuario_id,empresa_id' });
+        if (error) throw new InternalServerErrorException(`Error asignando el propietario: ${error.message}`);
     }
 }

@@ -368,4 +368,11 @@ export class UsuariosService {
         }
         return (await this.obtenerPorId(usuarioId))!;
     }
+
+    // Ids de todas las empresas activas (lo que gestiona un super admin).
+    async idsEmpresasActivas(): Promise<number[]> {
+        const { data, error } = await this.supabaseService.getClient().from('empresas').select('id').eq('activa', true);
+        if (error) throw new Error(`Error consultando empresas: ${error.message}`);
+        return (data ?? []).map((e: { id: number }) => e.id);
+    }
 }

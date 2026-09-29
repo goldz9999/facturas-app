@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 // Rol por empresa (usuario_empresas.rol). El rol "legacy" de req.user.rol
 // (super_admin | admin | empleado) se DERIVA de la empresa activa para que
@@ -143,4 +143,22 @@ export function puedeGestionarTelegram(u: { es_super_admin: boolean; empresas: E
 export function validarPermisoTelegram(quien: { es_super_admin: boolean; rol_empresa: RolEmpresa | null }, valor: boolean | undefined): void {
     if (valor === undefined || quien.es_super_admin || quien.rol_empresa === 'propietario') return;
     throw new ForbiddenException('Solo el propietario decide quién gestiona las cuentas de Telegram.');
+}
+
+// Empresas en las que alguien puede dar o quitar acceso a otros usuarios:
+// el propietario, en todas (ya las tiene todas por ampliarPropietario); un
+// administrador, solo en las que administra. El resto, en ninguna.
+export function empresasGestionables(quien: { empresas: EmpresaRol[] }): number[] {
+    return quien.empresas.filter((e) => e.rol === 'propietario' || e.rol === 'administrador').map((e) => e.empresa_id);
+}
+
+// Nueva lista de empresas de un usuario: se respetan las que quien edita no
+// gestiona (no puede quitarlas) y se reemplazan las que sí gestiona por las
+// pedidas. Nunca queda sin empresas.
+export function combinarEmpresas(actuales: number[], pedidas: number[], gestionables: number[]): number[] {
+    const fuera = pedidas.filter((id) => !gestionables.includes(id));
+    if (fuera.length) throw new ForbiddenException('No puedes dar acceso a empresas que no administras.');
+    const resultado = [...new Set([...actuales.filter((id) => !gestionables.includes(id)), ...pedidas])];
+    if (!resultado.length) throw new BadRequestException('El usuario debe pertenecer al menos a una empresa.');
+    return resultado;
 }

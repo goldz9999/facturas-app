@@ -111,7 +111,7 @@ describe('UsuariosController — permiso de gastos personales', () => {
         const { c, service } = montar();
         await expect(c.actualizar(5, { puede_registrar_personal: true } as any, admin())).rejects.toThrow(ForbiddenException);
         await expect(c.actualizar(5, { puede_registrar_personal: false } as any, admin())).rejects.toThrow(ForbiddenException);
-        expect(() => c.crear({ nombre: 'x', puede_registrar_personal: true } as any, admin())).toThrow(ForbiddenException);
+        await expect(c.crear({ nombre: 'x', puede_registrar_personal: true } as any, admin())).rejects.toThrow(ForbiddenException);
         expect(service.actualizar).not.toHaveBeenCalled();
     });
 
@@ -119,5 +119,36 @@ describe('UsuariosController — permiso de gastos personales', () => {
         const { c, service } = montar();
         await c.actualizar(5, { puede_registrar_personal: true } as any, admin({ rol_empresa: 'propietario' }));
         expect(service.actualizar).toHaveBeenCalledWith(5, { puede_registrar_personal: true }, 2);
+    });
+});
+
+describe('UsuariosController — empresas de un usuario', () => {
+    const conEmpresas = (over: Record<string, unknown> = {}) => {
+        const service = {
+            obtenerPorId: jest.fn().mockResolvedValue({ ...objetivo(), empresa_ids: [2, 5], empresas: [{ empresa_id: 2, rol: 'contador' }, { empresa_id: 5, rol: 'empleado' }], ...over }),
+            asignarEmpresas: jest.fn().mockResolvedValue(undefined),
+            crear: jest.fn().mockResolvedValue({ id: 20 }),
+            idsEmpresasActivas: jest.fn().mockResolvedValue([1, 2, 3, 5]),
+        };
+        return { c: new UsuariosController(service as any), service };
+    };
+    const adminDe = (empresas: { empresa_id: number; rol: string }[]) => admin({ empresas });
+
+    it('un administrador asigna solo entre las empresas que administra y respeta las demás', async () => {
+        const { c, service } = conEmpresas();
+        const req = adminDe([{ empresa_id: 2, rol: 'administrador' }, { empresa_id: 3, rol: 'administrador' }]);
+        await c.empresas(5, { empresa_ids: [2, 3] }, req);
+        expect(service.asignarEmpresas).toHaveBeenCalledWith(5, [5, 2, 3], 'contador');
+        await expect(c.empresas(5, { empresa_ids: [1] }, req)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('al crear, por defecto la empresa activa; puede sumar otras que administre', async () => {
+        const { c, service } = conEmpresas();
+        const req = adminDe([{ empresa_id: 2, rol: 'administrador' }, { empresa_id: 3, rol: 'administrador' }, { empresa_id: 4, rol: 'empleado' }]);
+        await c.crear({ nombre: 'N', email: 'n@x.pe', password: 'clave123' } as any, req);
+        expect(service.crear.mock.calls[0][1]).toEqual([2]);
+        await c.crear({ nombre: 'N', email: 'n@x.pe', password: 'clave123', empresa_ids: [2, 3] } as any, req);
+        expect(service.crear.mock.calls[1][1]).toEqual([2, 3]);
+        await expect(c.crear({ nombre: 'N', empresa_ids: [4] } as any, req)).rejects.toThrow(ForbiddenException);
     });
 });

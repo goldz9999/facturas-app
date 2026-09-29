@@ -1,5 +1,8 @@
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
     ampliarPropietario,
+    combinarEmpresas,
+    empresasGestionables,
     puedeRegistrarPersonal,
     elegirEmpresaActiva,
     EmpresaRol,
@@ -172,5 +175,19 @@ describe('puedeRegistrarPersonal', () => {
         expect(puedeRegistrarPersonal({ es_super_admin: true, empresas: [], puede_registrar_personal: false })).toBe(true);
         expect(puedeRegistrarPersonal({ es_super_admin: false, empresas: [{ empresa_id: 1, rol: 'administrador' }], puede_registrar_personal: false })).toBe(false);
         expect(puedeRegistrarPersonal({ es_super_admin: false, empresas: [{ empresa_id: 1, rol: 'empleado' }], puede_registrar_personal: true })).toBe(true);
+    });
+});
+
+describe('empresasGestionables / combinarEmpresas', () => {
+    it('un administrador gestiona solo las empresas que administra', () => {
+        expect(empresasGestionables({ empresas: [{ empresa_id: 1, rol: 'administrador' }, { empresa_id: 2, rol: 'contador' }, { empresa_id: 3, rol: 'propietario' }] })).toEqual([1, 3]);
+    });
+    it('conserva las empresas que no gestiona y reemplaza las que sí', () => {
+        expect(combinarEmpresas([1, 5], [1, 2], [1, 2])).toEqual([5, 1, 2]);
+        expect(combinarEmpresas([1, 2], [2], [1, 2])).toEqual([2]);
+    });
+    it('no da acceso fuera de lo que gestiona ni deja al usuario sin empresas', () => {
+        expect(() => combinarEmpresas([1], [9], [1, 2])).toThrow(ForbiddenException);
+        expect(() => combinarEmpresas([1], [], [1])).toThrow(BadRequestException);
     });
 });

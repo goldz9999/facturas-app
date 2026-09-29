@@ -54,3 +54,17 @@ describe('EmpresasController.subirLogo', () => {
         expect(svc.actualizarLogo).toHaveBeenCalledWith(2, file);
     });
 });
+
+describe('EmpresasController.crear', () => {
+    const mk = () => {
+        const svc = { crear: jest.fn().mockResolvedValue({ id: 7, nombre: 'Nueva' }), agregarPropietario: jest.fn().mockResolvedValue(undefined) };
+        return { c: new EmpresasController(svc as any), svc };
+    };
+    it('solo el propietario crea, y queda como propietario de la nueva', async () => {
+        const { c, svc } = mk();
+        await expect(c.crear({ nombre: 'X' } as any, { user: { id: 3, es_super_admin: false, rol_empresa: 'administrador' } })).rejects.toThrow(ForbiddenException);
+        expect(svc.crear).not.toHaveBeenCalled();
+        await c.crear({ nombre: 'Nueva' } as any, { user: { id: 3, es_super_admin: false, rol_empresa: 'propietario' } });
+        expect(svc.agregarPropietario).toHaveBeenCalledWith(7, 3);
+    });
+});
