@@ -28,8 +28,7 @@ COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3000
 
-# Sin endpoint /health en la API: se comprueba que el puerto acepta conexiones.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "require('net').connect(process.env.PORT||3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", "dist/main"]

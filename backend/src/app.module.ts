@@ -9,6 +9,7 @@ import { EmpresasModule } from './empresas/empresas.module';
 import { AuthModule } from './auth/auth.module';
 import { ProveedoresModule } from './proveedores/proveedores.module';
 import { PedidosModule } from './pedidos/pedidos.module';
+import { HealthController } from './health/health.controller';
 
 @Module({
   imports: [
@@ -23,5 +24,6 @@ import { PedidosModule } from './pedidos/pedidos.module';
     ProveedoresModule,
     PedidosModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule { }
