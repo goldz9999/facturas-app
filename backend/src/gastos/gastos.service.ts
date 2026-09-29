@@ -848,7 +848,7 @@ export class GastosService {
             // "original" desde obtenerPorId) mostrara foto en uno de los dos
             // gastos y "Sin foto" en el otro aunque ambos sí la tuvieran.
             .select(
-                '*, categorias(nombre), proveedores(nombre, ruc), pedidos(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion), evidencias(*)',
+                '*, categorias(nombre), proveedores(nombre, ruc), pedidos(nombre), comprobantes(id, numero, tipo, creado_en), pagos(id, medio, numero_operacion, creado_en), evidencias(*)',
             )
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false });
