@@ -48,6 +48,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             rol: rolLegacy(usuario.es_super_admin, activa?.rol ?? null),
             rol_empresa: usuario.es_super_admin ? 'propietario' : (activa?.rol ?? null),
             es_super_admin: usuario.es_super_admin,
+            empresa_activa_id: activa?.empresa_id ?? null,
             empresas: usuario.empresas,
             empresa_ids: usuario.empresa_ids,
             puede_registrar_personal: usuario.puede_registrar_personal,

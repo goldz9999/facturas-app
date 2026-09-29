@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { resolverRolAlta } from '../auth/roles-empresa';
 import { UsuariosService } from './usuarios.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
@@ -13,10 +14,17 @@ export class UsuariosController {
 
     // super_admin ve usuarios de todas las empresas; admin solo ve los que
     // tengan acceso a la suya (Paso 33: puede ser una entre varias).
+    //
+    // Con ?empresa_id= (el panel web siempre lo manda) lista los miembros de la
+    // empresa activa; el rol de req.user ya se derivó de esa misma empresa.
     @Get()
     @Roles('super_admin', 'admin')
-    listar(@Request() req) {
-        const empresaId = req.user.rol === 'super_admin' ? undefined : req.user.empresa_ids?.[0];
+    listar(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
+        const pedida = Number(empresaIdQuery);
+        const empresaId =
+            req.user.rol === 'super_admin'
+                ? (Number.isInteger(pedida) && pedida > 0 ? pedida : undefined)
+                : (req.user.empresa_activa_id ?? req.user.empresa_ids?.[0]);
         return this.usuariosService.listar(empresaId);
     }
 
@@ -25,13 +33,19 @@ export class UsuariosController {
     @Post()
     @Roles('super_admin', 'admin')
     crear(@Body() dto: CrearUsuarioDto, @Request() req) {
+        // Valida que quien crea pueda otorgar ese rol (p. ej. solo un
+        // propietario crea propietarios) y deriva el rol legacy.
+        const alta = resolverRolAlta(dto, { es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa });
         if (req.user.rol === 'admin') {
             if (dto.rol === 'super_admin') {
                 throw new ForbiddenException('Un admin de empresa no puede crear super_admin');
             }
-            return this.usuariosService.crear(dto, req.user.empresa_ids);
+            // El nuevo miembro queda SOLO en la empresa activa de quien lo crea
+            // (no en todas las que este administra).
+            const empresaActiva = req.user.empresa_activa_id;
+            return this.usuariosService.crear(dto, empresaActiva != null ? [empresaActiva] : req.user.empresa_ids, alta);
         }
-        return this.usuariosService.crear(dto);
+        return this.usuariosService.crear(dto, undefined, alta);
     }
 
     // Igual que crear(): admin solo puede editar usuarios que ya tengan

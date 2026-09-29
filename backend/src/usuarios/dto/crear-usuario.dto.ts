@@ -1,4 +1,5 @@
 import { IsArray, IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
+import { ROLES_EMPRESA, RolEmpresa } from '../../auth/roles-empresa';
 
 export class CrearUsuarioDto {
     // Opcional: un usuario puede crearse desde el panel web sin tener aún
@@ -15,6 +16,12 @@ export class CrearUsuarioDto {
     @IsIn(['super_admin', 'admin', 'empleado'])
     @IsOptional()
     rol?: string;
+
+    // Rol por empresa (el que usa el panel web). Si viene, manda sobre `rol`,
+    // que se deriva de él.
+    @IsIn(ROLES_EMPRESA)
+    @IsOptional()
+    rol_empresa?: RolEmpresa;
 
     @IsBoolean()
     @IsOptional()

@@ -1,3 +1,5 @@
+import { ForbiddenException } from '@nestjs/common';
+
 // Rol por empresa (usuario_empresas.rol). El rol "legacy" de req.user.rol
 // (super_admin | admin | empleado) se DERIVA de la empresa activa para que
 // RolesGuard, UsuariosController, el gateway y Telegram sigan funcionando
@@ -65,4 +67,21 @@ export function elegirEmpresaActiva(
         if (porUltima) return porUltima;
     }
     return empresas[0];
+}
+
+// Decide el rol con el que se da de alta a un usuario nuevo y valida que quien
+// lo crea pueda otorgarlo. `rol_empresa` (rol fino) manda; si solo viene el rol
+// legacy se usa su equivalente. El rol legacy guardado en usuarios.rol se deriva.
+export function resolverRolAlta(
+    dto: { rol?: string; rol_empresa?: RolEmpresa },
+    quien: { es_super_admin: boolean; rol_empresa: RolEmpresa | null },
+): { rol_empresa: RolEmpresa; rol: string } {
+    if (dto.rol === 'super_admin' && !quien.es_super_admin) {
+        throw new ForbiddenException('Solo un super_admin puede crear otro super_admin');
+    }
+    const rolEmpresa = dto.rol_empresa ?? rolEmpresaDesdeLegacy(dto.rol ?? 'empleado');
+    if (rolEmpresa === 'propietario' && !quien.es_super_admin && quien.rol_empresa !== 'propietario') {
+        throw new ForbiddenException('Solo un propietario puede crear otro propietario');
+    }
+    return { rol_empresa: rolEmpresa, rol: dto.rol === 'super_admin' ? 'super_admin' : rolLegacy(false, rolEmpresa) };
 }

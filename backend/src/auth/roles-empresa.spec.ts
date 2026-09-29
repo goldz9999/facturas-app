@@ -4,6 +4,7 @@ import {
     empresasDeFilas,
     esRolEmpresa,
     esSuperAdmin,
+    resolverRolAlta,
     rolEmpresaActualizado,
     rolEmpresaDesdeLegacy,
     rolLegacy,
@@ -93,5 +94,31 @@ describe('elegirEmpresaActiva', () => {
     });
     it('sin query ni última empresa usa la primera', () => {
         expect(elegirEmpresaActiva(empresas, undefined, null)?.empresa_id).toBe(1);
+    });
+});
+
+describe('resolverRolAlta', () => {
+    const admin = { es_super_admin: false, rol_empresa: 'administrador' as const };
+    const dueno = { es_super_admin: false, rol_empresa: 'propietario' as const };
+    const superAdmin = { es_super_admin: true, rol_empresa: 'propietario' as const };
+
+    it('rol_empresa manda y el rol legacy se deriva', () => {
+        expect(resolverRolAlta({ rol_empresa: 'contador' }, admin)).toEqual({ rol_empresa: 'contador', rol: 'empleado' });
+        expect(resolverRolAlta({ rol_empresa: 'administrador' }, admin)).toEqual({ rol_empresa: 'administrador', rol: 'admin' });
+    });
+    it('solo con rol legacy usa su equivalente', () => {
+        expect(resolverRolAlta({ rol: 'admin' }, admin)).toEqual({ rol_empresa: 'administrador', rol: 'admin' });
+    });
+    it('sin nada crea un empleado', () => {
+        expect(resolverRolAlta({}, admin)).toEqual({ rol_empresa: 'empleado', rol: 'empleado' });
+    });
+    it('solo un propietario o super admin puede crear propietarios', () => {
+        expect(() => resolverRolAlta({ rol_empresa: 'propietario' }, admin)).toThrow('propietario');
+        expect(resolverRolAlta({ rol_empresa: 'propietario' }, dueno)).toEqual({ rol_empresa: 'propietario', rol: 'admin' });
+        expect(resolverRolAlta({ rol_empresa: 'propietario' }, superAdmin)).toEqual({ rol_empresa: 'propietario', rol: 'admin' });
+    });
+    it('solo un super admin puede crear super admins', () => {
+        expect(() => resolverRolAlta({ rol: 'super_admin' }, dueno)).toThrow('super_admin');
+        expect(resolverRolAlta({ rol: 'super_admin' }, superAdmin)).toEqual({ rol_empresa: 'administrador', rol: 'super_admin' });
     });
 });

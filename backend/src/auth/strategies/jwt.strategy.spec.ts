@@ -61,3 +61,14 @@ describe('JwtStrategy.validate', () => {
         await expect(s.validate({ query: {} }, { sub: 1 })).rejects.toThrow(UnauthorizedException);
     });
 });
+
+describe('JwtStrategy.validate — empresa activa', () => {
+    it('expone empresa_activa_id según ?empresa_id', async () => {
+        const u = await estrategia().validate({ query: { empresa_id: '2' } }, { sub: 1 });
+        expect(u.empresa_activa_id).toBe(2);
+    });
+    it('sin empresas es null', async () => {
+        const u = await estrategia({ empresas: [], empresa_ids: [], ultima_empresa_id: null }).validate({ query: {} }, { sub: 1 });
+        expect(u.empresa_activa_id).toBeNull();
+    });
+});
