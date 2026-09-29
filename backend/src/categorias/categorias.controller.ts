@@ -2,9 +2,11 @@ import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query,
 import { ApiQuery } from '@nestjs/swagger';
 import { CategoriasService } from './categorias.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesEmpresaGuard } from '../auth/guards/roles-empresa.guard';
+import { RolesEmpresa } from '../auth/decorators/roles-empresa.decorator';
 import { resolverEmpresaId } from '../common/resolver-empresa.util';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesEmpresaGuard)
 @Controller('categorias')
 export class CategoriasController {
     constructor(private categoriasService: CategoriasService) { }
@@ -23,12 +25,14 @@ export class CategoriasController {
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'contador')
     @Post()
     async crear(@Body() body: { nombre: string }, @Query('empresa_id') empresaIdQuery: string, @Request() req) {
         return this.categoriasService.crear(body.nombre, resolverEmpresaId(req, empresaIdQuery));
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'contador')
     @Patch(':id')
     async actualizar(
         @Param('id', ParseIntPipe) id: number,
@@ -40,6 +44,7 @@ export class CategoriasController {
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'contador')
     @Delete(':id')
     async eliminar(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string, @Request() req) {
         await this.categoriasService.eliminar(id, resolverEmpresaId(req, empresaIdQuery));

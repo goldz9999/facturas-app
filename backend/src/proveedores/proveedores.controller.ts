@@ -2,6 +2,8 @@ import { BadRequestException, Body, Controller, Get, Param, Patch, Query, Reques
 import { ApiQuery } from '@nestjs/swagger';
 import { ProveedoresService } from './proveedores.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesEmpresaGuard } from '../auth/guards/roles-empresa.guard';
+import { RolesEmpresa } from '../auth/decorators/roles-empresa.decorator';
 import { resolverEmpresaId } from '../common/resolver-empresa.util';
 
 // GET es de solo lectura (los proveedores se crean desde el flujo de
@@ -11,7 +13,7 @@ import { resolverEmpresaId } from '../common/resolver-empresa.util';
 // que Telegram ya guarda con guardarSugerencia() -- no se agregó lógica
 // nueva, solo se expuso la que ya existía (mismo criterio que en 24.1/24.3
 // de PROGRESO_SIREGG). Desbloquea ProviderList.jsx / ProviderDetail.jsx.
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesEmpresaGuard)
 @Controller('proveedores')
 export class ProveedoresController {
     constructor(private proveedoresService: ProveedoresService) { }
@@ -38,6 +40,7 @@ export class ProveedoresController {
     // el proveedor no es de esa empresa, guardarSugerencia() no actualiza
     // ninguna fila (el .eq('empresa_id', ...) del UPDATE no matchea).
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'contador')
     @Patch(':id')
     async actualizar(
         @Param('id') id: string,

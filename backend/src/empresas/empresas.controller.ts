@@ -54,10 +54,16 @@ export class EmpresasController {
         return this.empresasService.crear(dto, file);
     }
 
+    // Un administrador/propietario solo puede renombrar SU empresa activa; activar/desactivar
+    // y el logo siguen siendo del super admin.
     @Patch(':id')
-    @Roles('super_admin')
-    actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarEmpresaDto) {
-        return this.empresasService.actualizar(id, dto);
+    @Roles('super_admin', 'admin')
+    async actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarEmpresaDto, @Request() req) {
+        if (req.user.es_super_admin) return this.empresasService.actualizar(id, dto);
+        if (req.user.empresa_activa_id !== id) {
+            throw new ForbiddenException('Solo puedes modificar la empresa activa.');
+        }
+        return this.empresasService.actualizar(id, { nombre: dto.nombre });
     }
 
     @Patch(':id/logo')

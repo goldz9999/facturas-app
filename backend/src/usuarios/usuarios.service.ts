@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
@@ -173,7 +173,7 @@ export class UsuariosService {
     // empresaIdPermitido presente = quien llama es admin de empresa: solo
     // puede tocar usuarios que ya tengan acceso a su propia empresa (mismo
     // patrón que crear/listar).
-    async actualizar(id: number, dto: ActualizarUsuarioDto, empresaIdPermitido?: number): Promise<Usuario> {
+    async actualizar(id: number, dto: ActualizarUsuarioDto, empresaIdPermitido?: number, empresaIdRol?: number): Promise<Usuario> {
         if (empresaIdPermitido !== undefined) {
             await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
         }
@@ -198,6 +198,13 @@ export class UsuariosService {
 
         if (dto.rol !== undefined) {
             await this.sincronizarRolEmpresas(id, dto.rol, empresaIdPermitido);
+        }
+
+        // Rol fino en UNA empresa: la del administrador que edita, o la que indica un super admin.
+        if (dto.rol_empresa !== undefined) {
+            const empresaId = empresaIdPermitido ?? empresaIdRol;
+            if (empresaId === undefined) throw new BadRequestException('Indica la empresa para cambiar el rol.');
+            await this.establecerRolEmpresa(id, empresaId, dto.rol_empresa);
         }
 
         // Reasignar empresas: solo quien puede ver todas (super_admin,
@@ -259,6 +266,16 @@ export class UsuariosService {
             const { error: errorUpdate } = await client.from('usuario_empresas').update({ rol: nuevo }).eq('id', fila.id);
             if (errorUpdate) throw new Error(`Error actualizando rol por empresa: ${errorUpdate.message}`);
         }
+    }
+
+    private async establecerRolEmpresa(usuarioId: number, empresaId: number, rol: RolEmpresa): Promise<void> {
+        const { error } = await this.supabaseService
+            .getClient()
+            .from('usuario_empresas')
+            .update({ rol })
+            .eq('usuario_id', usuarioId)
+            .eq('empresa_id', empresaId);
+        if (error) throw new Error(`Error actualizando rol por empresa: ${error.message}`);
     }
 
     private async rolGlobal(usuarioId: number): Promise<string> {

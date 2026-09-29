@@ -42,7 +42,8 @@ function montar(opts: Opciones = {}) {
             delete: () => ({ eq: async () => ({ error: null }) }),
             update: (v: any) => {
                 updates.usuario_empresas.push(v);
-                return { eq: async () => ({ error: null }) };
+                const r: any = { eq: () => r, then: (ok: any, ko: any) => Promise.resolve({ error: null }).then(ok, ko) };
+                return r;
             },
             insert: async (v: any) => {
                 insertados.usuario_empresas.push(v);
@@ -130,5 +131,18 @@ describe('UsuariosService.desactivar', () => {
     it('acotado a una empresa exige que el usuario pertenezca a ella', async () => {
         const { svc } = montar({ pertenece: false, fila: filaBase });
         await expect(svc.desactivar(9, 3)).rejects.toThrow(NotFoundException);
+    });
+});
+
+describe('UsuariosService.actualizar — rol por empresa', () => {
+    it('cambia el rol del usuario en esa empresa', async () => {
+        const { svc, updates } = montar({ fila: filaBase });
+        await svc.actualizar(9, { rol_empresa: 'contador' } as any, 3);
+        expect(updates.usuario_empresas).toEqual([{ rol: 'contador' }]);
+    });
+    it('un super admin indica la empresa aparte', async () => {
+        const { svc, updates } = montar({ fila: filaBase });
+        await svc.actualizar(9, { rol_empresa: 'supervisor' } as any, undefined, 7);
+        expect(updates.usuario_empresas).toEqual([{ rol: 'supervisor' }]);
     });
 });

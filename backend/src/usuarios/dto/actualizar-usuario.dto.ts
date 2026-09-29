@@ -1,4 +1,5 @@
 import { IsArray, IsBoolean, IsEmail, IsIn, IsNumber, IsOptional, IsString, MinLength } from 'class-validator';
+import { ROLES_EMPRESA, RolEmpresa } from '../../auth/roles-empresa';
 
 export class ActualizarUsuarioDto {
     @IsString()
@@ -18,6 +19,11 @@ export class ActualizarUsuarioDto {
     @IsIn(['super_admin', 'admin', 'empleado'])
     @IsOptional()
     rol?: string;
+
+    // Rol del usuario en la empresa activa (el que usa el panel web).
+    @IsIn(ROLES_EMPRESA)
+    @IsOptional()
+    rol_empresa?: RolEmpresa;
 
     @IsBoolean()
     @IsOptional()

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { esSuperAdmin, resolverRolAlta, validarGestion } from '../auth/roles-empresa';
 import { UsuariosService } from './usuarios.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
@@ -84,7 +84,19 @@ export class UsuariosController {
     // permisos, o directo en la base de datos como último recurso.
     @Patch(':id')
     @Roles('super_admin', 'admin')
-    async actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarUsuarioDto, @Request() req) {
+    async actualizar(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() dto: ActualizarUsuarioDto,
+        @Request() req,
+        @Query('empresa_id') empresaIdQuery?: string,
+    ) {
+        if (dto.rol_empresa !== undefined) {
+            if (id === req.user.id && dto.rol_empresa !== req.user.rol_empresa) {
+                throw new ForbiddenException('No puedes cambiar tu propio rol');
+            }
+            // Mismas reglas que al crear: solo un propietario nombra propietarios.
+            resolverRolAlta({ rol_empresa: dto.rol_empresa }, { es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa });
+        }
         if (id === req.user.id) {
             if (dto.rol !== undefined && dto.rol !== req.user.rol) {
                 throw new ForbiddenException('No puedes cambiar tu propio rol');
@@ -111,6 +123,11 @@ export class UsuariosController {
             const empresaId = this.empresaActiva(req);
             await this.verificarGestion(req, id, empresaId);
             return this.usuariosService.actualizar(id, dto, empresaId);
+        }
+        if (dto.rol_empresa !== undefined) {
+            const empresa = Number(empresaIdQuery);
+            if (!Number.isInteger(empresa) || empresa <= 0) throw new BadRequestException('Indica ?empresa_id= para cambiar el rol en una empresa.');
+            return this.usuariosService.actualizar(id, dto, undefined, empresa);
         }
         return this.usuariosService.actualizar(id, dto);
     }

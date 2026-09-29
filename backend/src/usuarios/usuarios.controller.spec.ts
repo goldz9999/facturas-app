@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { UsuariosController } from './usuarios.controller';
 
 const objetivo = (over: Record<string, unknown> = {}) => ({
@@ -80,5 +80,28 @@ describe('UsuariosController — alcance por empresa activa', () => {
         const { c, service } = montar();
         await c.actualizar(5, { nombre: 'x' } as any, superAdmin);
         expect(service.actualizar).toHaveBeenCalledWith(5, { nombre: 'x' });
+    });
+});
+
+describe('UsuariosController — rol por empresa', () => {
+    it('un administrador cambia el rol de un empleado en su empresa activa', async () => {
+        const { c, service } = montar();
+        await c.actualizar(5, { rol_empresa: 'contador' } as any, admin());
+        expect(service.actualizar).toHaveBeenCalledWith(5, { rol_empresa: 'contador' }, 2);
+    });
+    it('un administrador no puede nombrar propietarios', async () => {
+        const { c, service } = montar();
+        await expect(c.actualizar(5, { rol_empresa: 'propietario' } as any, admin())).rejects.toThrow(ForbiddenException);
+        expect(service.actualizar).not.toHaveBeenCalled();
+    });
+    it('nadie cambia su propio rol', async () => {
+        const { c } = montar(objetivo({ id: 10, empresas: [{ empresa_id: 2, rol: 'administrador' }] }));
+        await expect(c.actualizar(10, { rol_empresa: 'empleado' } as any, admin())).rejects.toThrow(ForbiddenException);
+    });
+    it('un super admin debe indicar la empresa con ?empresa_id=', async () => {
+        const { c, service } = montar();
+        await expect(c.actualizar(5, { rol_empresa: 'contador' } as any, superAdmin)).rejects.toThrow(BadRequestException);
+        await c.actualizar(5, { rol_empresa: 'contador' } as any, superAdmin, '7');
+        expect(service.actualizar).toHaveBeenCalledWith(5, { rol_empresa: 'contador' }, undefined, 7);
     });
 });

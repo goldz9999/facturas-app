@@ -4,6 +4,8 @@ import { PedidosService } from './pedidos.service';
 import { CrearPedidoDto } from './dto/crear-pedido.dto';
 import { ActualizarPedidoDto } from './dto/actualizar-pedido.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesEmpresaGuard } from '../auth/guards/roles-empresa.guard';
+import { RolesEmpresa } from '../auth/decorators/roles-empresa.decorator';
 import { resolverEmpresaId } from '../common/resolver-empresa.util';
 
 // RF-11. Se usa `resolverEmpresaId` (variante obligatoria), no
@@ -14,7 +16,7 @@ import { resolverEmpresaId } from '../common/resolver-empresa.util';
 // No se agregan roles nuevos ni se toca el sistema de permisos: cualquier
 // usuario autenticado gestiona los pedidos de las empresas a las que ya
 // tiene acceso, mismo criterio que ya rige para categorías.
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesEmpresaGuard)
 @Controller('pedidos')
 export class PedidosController {
     constructor(private pedidosService: PedidosService) { }
@@ -48,12 +50,14 @@ export class PedidosController {
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'supervisor')
     @Post()
     async crear(@Body() body: CrearPedidoDto, @Query('empresa_id') empresaIdQuery: string, @Request() req) {
         return this.pedidosService.crear(body, resolverEmpresaId(req, empresaIdQuery));
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'supervisor')
     @Patch(':id')
     async actualizar(
         @Param('id', ParseIntPipe) id: number,
@@ -65,6 +69,7 @@ export class PedidosController {
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Obligatorio si tienes acceso a más de una empresa' })
+    @RolesEmpresa('propietario', 'administrador', 'supervisor')
     @Delete(':id')
     async eliminar(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string, @Request() req) {
         const { gastos_desasociados } = await this.pedidosService.eliminar(id, resolverEmpresaId(req, empresaIdQuery));
