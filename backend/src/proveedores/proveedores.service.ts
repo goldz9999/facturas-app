@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 
 export interface Proveedor {
@@ -113,6 +113,56 @@ export class ProveedoresService {
             );
         }
         return creado as any;
+    }
+
+    // Proveedor elegido o corregido a mano desde el detalle de un gasto (panel).
+    // El nombre manda: si ya existe un proveedor con ese nombre en la empresa se
+    // usa ese y, si vino `ruc`, se le corrige el RUC (el RUC es del proveedor, así
+    // que la corrección vale para todos sus gastos). Si no existe por nombre pero
+    // el RUC ya es de otro proveedor, se usa ese (el RUC es exacto). Si no, se crea.
+    // `ruc` undefined = no tocar el RUC; null o '' = borrarlo.
+    async resolverDesdePanel(nombre: string, ruc: string | null | undefined, empresaId: number): Promise<Proveedor> {
+        const client = this.supabase.getClient();
+        const columnas = 'id, nombre, ruc, categoria_id_sugerida, es_personal_sugerido, empresa_id';
+        const nombreN = (nombre ?? '').trim();
+        if (!nombreN) throw new BadRequestException('Indica el nombre del proveedor.');
+        const rucN = ruc === undefined ? undefined : (ruc ?? '').trim() || null;
+        if (rucN && !/^[0-9]{11}$/.test(rucN)) throw new BadRequestException('El RUC debe tener 11 dígitos.');
+
+        const buscar = async (campo: 'nombre' | 'ruc', valor: string) => {
+            let q = client.from('proveedores').select(columnas).eq('empresa_id', empresaId);
+            q = campo === 'nombre' ? q.ilike('nombre', valor.replace(/[\\%_]/g, '\\$&')) : q.eq('ruc', valor);
+            const { data, error } = await q.order('id', { ascending: true }).limit(1).maybeSingle();
+            if (error) throw new InternalServerErrorException(`Error buscando proveedor: ${error.message}`);
+            return data as Proveedor | null;
+        };
+
+        const porNombre = await buscar('nombre', nombreN);
+        if (porNombre) {
+            if (rucN === undefined || rucN === porNombre.ruc) return porNombre;
+            if (rucN) {
+                const otro = await buscar('ruc', rucN);
+                if (otro && otro.id !== porNombre.id) {
+                    throw new BadRequestException(`Ese RUC ya pertenece al proveedor "${otro.nombre}".`);
+                }
+            }
+            const { error } = await client.from('proveedores').update({ ruc: rucN }).eq('id', porNombre.id).eq('empresa_id', empresaId);
+            if (error) throw new InternalServerErrorException(`Error actualizando el RUC del proveedor: ${error.message}`);
+            return { ...porNombre, ruc: rucN };
+        }
+
+        if (rucN) {
+            const porRuc = await buscar('ruc', rucN);
+            if (porRuc) return porRuc;
+        }
+
+        const { data: creado, error } = await client
+            .from('proveedores')
+            .insert({ nombre: nombreN, ruc: rucN ?? null, empresa_id: empresaId })
+            .select(columnas)
+            .single();
+        if (error) throw new InternalServerErrorException(`Error creando proveedor: ${error.message}`);
+        return creado as Proveedor;
     }
 
     // Lista de proveedores de una empresa para el panel (ProviderList.jsx /

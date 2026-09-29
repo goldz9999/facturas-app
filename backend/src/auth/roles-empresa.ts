@@ -101,3 +101,21 @@ export function validarGestion(
         throw new ForbiddenException('Solo un propietario puede modificar a otro propietario');
     }
 }
+
+// El propietario ve todas las empresas: si el usuario es propietario en al
+// menos una, se le da acceso como propietario a cada empresa activa. Sus filas
+// reales en usuario_empresas se respetan (y van primero, para que la empresa
+// por defecto siga siendo la suya); las demás se agregan en orden de id.
+export function esPropietarioEnAlguna(empresas: EmpresaRol[]): boolean {
+    return empresas.some((e) => e.rol === 'propietario');
+}
+
+export function ampliarPropietario(empresas: EmpresaRol[], todasActivas: number[]): EmpresaRol[] {
+    if (!esPropietarioEnAlguna(empresas)) return empresas;
+    const propias = new Set(empresas.map((e) => e.empresa_id));
+    const extra = [...todasActivas]
+        .filter((id) => !propias.has(id))
+        .sort((a, b) => a - b)
+        .map((empresa_id) => ({ empresa_id, rol: 'propietario' as RolEmpresa }));
+    return [...empresas, ...extra];
+}

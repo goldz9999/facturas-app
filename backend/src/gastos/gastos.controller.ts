@@ -1,9 +1,17 @@
 import { BadRequestException, Body, Controller, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiQuery } from '@nestjs/swagger';
-import { GastosService, FiltrosGastos, DatosPago } from './gastos.service';
+import { GastosService, FiltrosGastos, DatosPago, MedioPago } from './gastos.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { resolverEmpresaIdFiltro } from '../common/resolver-empresa.util';
+
+// Espacio "Gastos personales" (?ambito=personal): los gastos marcados como
+// personales del propio usuario, en todas las empresas a las que tiene acceso.
+// No es una empresa: el aislamiento sigue siendo la lista empresa_ids del usuario.
+function alcance(req: { user: { id: number; rol: string; empresa_ids: number[] } }, empresaIdQuery: string | undefined, ambito: string | undefined) {
+    if (ambito === 'personal') return { empresaId: req.user.empresa_ids ?? [], personalDe: req.user.id };
+    return { empresaId: resolverEmpresaIdFiltro(req, empresaIdQuery), personalDe: undefined };
+}
 
 @UseGuards(JwtAuthGuard)
 @Controller('gastos')
@@ -30,6 +38,7 @@ export class GastosController {
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
     @ApiQuery({ name: 'limite', required: false, type: Number })
     @ApiQuery({ name: 'offset', required: false, type: Number })
+    @ApiQuery({ name: 'ambito', required: false, enum: ['personal'], description: 'personal = solo mis gastos personales' })
     @Get()
     async listar(@Query() q: Record<string, string>, @Request() req) {
         const aBooleano = (v?: string) => (v === undefined ? undefined : v === 'true');
@@ -52,7 +61,8 @@ export class GastosController {
             offset: aNumero(q.offset),
         };
 
-        const empresaId = resolverEmpresaIdFiltro(req, q.empresa_id);
+        const { empresaId, personalDe } = alcance(req, q.empresa_id, q.ambito);
+        if (personalDe !== undefined) Object.assign(filtros, { esPersonal: true, usuarioId: personalDe });
         return this.gastosService.listar(filtros, empresaId);
     }
 
@@ -80,19 +90,21 @@ export class GastosController {
     // GET ':id' -- si no, Nest interpreta "resumen" como un :id numérico
     // que ParseIntPipe rechaza con 400 antes de llegar acá.
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
+    @ApiQuery({ name: 'ambito', required: false, enum: ['personal'], description: 'personal = solo mis gastos personales' })
     @Get('resumen')
-    async resumen(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
-        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.resumen(empresaId);
+    async resumen(@Query('empresa_id') empresaIdQuery: string | undefined, @Query('ambito') ambito: string | undefined, @Request() req) {
+        const { empresaId, personalDe } = alcance(req, empresaIdQuery, ambito);
+        return this.gastosService.resumen(empresaId, personalDe);
     }
 
     // Conteos para las cards resumen de Gastos.jsx. Debe declararse antes de
     // GET ':id' por el mismo motivo que 'resumen' (ParseIntPipe).
     @ApiQuery({ name: 'empresa_id', required: false, type: Number, description: 'Filtrar por una empresa específica' })
+    @ApiQuery({ name: 'ambito', required: false, enum: ['personal'], description: 'personal = solo mis gastos personales' })
     @Get('conteos')
-    async conteos(@Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
-        const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.contarPorEstado(empresaId);
+    async conteos(@Query('empresa_id') empresaIdQuery: string | undefined, @Query('ambito') ambito: string | undefined, @Request() req) {
+        const { empresaId, personalDe } = alcance(req, empresaIdQuery, ambito);
+        return this.gastosService.contarPorEstado(empresaId, personalDe);
     }
 
     @ApiQuery({ name: 'empresa_id', required: false, type: Number })
@@ -116,12 +128,19 @@ export class GastosController {
             // null quita la asociación ("Sin pedido"). GastosService valida
             // que el pedido sea de la misma empresa del gasto.
             pedido_id?: number | null;
+            proveedor_nombre?: string;
+            proveedor_ruc?: string | null;
+            medio_pago?: MedioPago;
         },
         @Query('empresa_id') empresaIdQuery: string | undefined,
         @Request() req,
     ) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.actualizar(id, body, empresaId);
+        // Solo estos campos: el body no pasa por un DTO, y sin este filtro se
+        // podría escribir cualquier columna (empresa_id, usuario_id, ...).
+        const permitidos = ['monto', 'descripcion', 'es_personal', 'categoria_id', 'proveedor_id', 'pedido_id', 'proveedor_nombre', 'proveedor_ruc', 'medio_pago'] as const;
+        const cambios = Object.fromEntries(permitidos.filter((k) => body?.[k] !== undefined).map((k) => [k, body[k]]));
+        return this.gastosService.actualizar(id, cambios, empresaId);
     }
 
     // Bandeja de revisión (ReviewInbox.jsx): el usuario confirma que un

@@ -3,7 +3,8 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { LoginDto } from './dto/login.dto';
-import { EmpresaRol, empresasDeFilas, esSuperAdmin } from './roles-empresa';
+import { EmpresaRol, esSuperAdmin } from './roles-empresa';
+import { empresasConAlcance } from '../common/usuario-contexto.service';
 
 export interface UsuarioAutenticado {
     id: number;
@@ -52,7 +53,7 @@ export class AuthService {
             throw new UnauthorizedException('Credenciales inválidas');
         }
 
-        const empresas = empresasDeFilas(data.usuario_empresas as any, data.rol);
+        const empresas = await empresasConAlcance(this.supabaseService.getClient(), data.usuario_empresas as any, data.rol);
         const usuario: UsuarioAutenticado = {
             id: data.id,
             nombre: data.nombre,

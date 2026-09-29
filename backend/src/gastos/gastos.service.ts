@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { ProveedoresService } from '../proveedores/proveedores.service';
 import { convertirImagenAWebp } from '../facturas/imagen.util';
@@ -78,8 +78,11 @@ export interface DatosEvidencia {
 // Datos de pago (sección 7/8 de requerimientos): entidad separada del
 // comprobante. Presente solo cuando se pudo identificar el medio de pago
 // (ej. captura de Yape/transferencia, o el usuario lo dijo por audio).
+export const MEDIOS_PAGO = ['yape', 'transferencia', 'efectivo', 'tarjeta', 'otro'] as const;
+export type MedioPago = (typeof MEDIOS_PAGO)[number];
+
 export interface DatosPago {
-    medio: 'yape' | 'transferencia' | 'efectivo' | 'tarjeta' | 'otro';
+    medio: MedioPago;
     numero_operacion?: string | null;
     monto?: number | null;
 }
@@ -830,7 +833,7 @@ export class GastosService {
             // "original" desde obtenerPorId) mostrara foto en uno de los dos
             // gastos y "Sin foto" en el otro aunque ambos sí la tuvieran.
             .select(
-                '*, categorias(nombre), proveedores(nombre), pedidos(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion), evidencias(*)',
+                '*, categorias(nombre), proveedores(nombre, ruc), pedidos(nombre), comprobantes(id, numero, tipo), pagos(id, medio, numero_operacion), evidencias(*)',
             )
             .order('fecha', { ascending: false })
             .order('creado_en', { ascending: false });
@@ -918,8 +921,11 @@ export class GastosService {
     // PROGRESO_SIREGG). "Hoy"/"semana"/"mes" se calculan en huso horario de
     // Perú, igual que ya hace facturas-normalizer.ts / GastosService (ver
     // fechaHoyPeru más arriba en este archivo).
-    async resumen(empresaId?: EmpresaFiltro) {
+    // personalDe: solo los gastos personales de ese usuario (espacio "Gastos personales").
+    async resumen(empresaId?: EmpresaFiltro, personalDe?: number) {
         const client = this.supabase.getClient();
+        const soloPersonal = <T extends { eq: Function }>(q: T): T =>
+            personalDe === undefined ? q : (q.eq('es_personal', true).eq('usuario_id', personalDe) as T);
 
         const fechaHoyPeru = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' });
         const hoy = new Date(`${fechaHoyPeru}T00:00:00`);
@@ -945,7 +951,7 @@ export class GastosService {
             // Mismo criterio que listar(): un duplicado ya confirmado no debe
             // sumarse dos veces a los totales del Dashboard.
             .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
-        queryMes = aplicarFiltroEmpresa(queryMes, empresaId);
+        queryMes = soloPersonal(aplicarFiltroEmpresa(queryMes, empresaId));
 
         const { data: gastosMes, error: errorMes } = await queryMes;
         if (errorMes) {
@@ -1001,7 +1007,7 @@ export class GastosService {
             .select('monto, fecha')
             .gte('fecha', inicioVentanaStr)
             .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
-        queryVentana = aplicarFiltroEmpresa(queryVentana, empresaId);
+        queryVentana = soloPersonal(aplicarFiltroEmpresa(queryVentana, empresaId));
 
         const { data: gastosVentana, error: errorVentana } = await queryVentana;
         if (errorVentana) {
@@ -1023,7 +1029,10 @@ export class GastosService {
         // Últimos 5 gastos, mismo formato que GET /gastos (relaciones
         // completas) para que el frontend pueda reusar mapearGasto/ExpenseTable
         // sin traducir dos veces.
-        const recientes = await this.listar({ limite: 5 }, empresaId);
+        const recientes = await this.listar(
+            personalDe === undefined ? { limite: 5 } : { limite: 5, esPersonal: true, usuarioId: personalDe },
+            empresaId,
+        );
 
         return { today, week, month, company, personal, topCategorias, topProveedores, recientes, tendenciaDiaria };
     }
@@ -1034,12 +1043,13 @@ export class GastosService {
     // Un duplicado ya confirmado ("Es el mismo gasto") NO cuenta en "todos"
     // ni en el resto de buckets -- mismo criterio de exclusión que listar()
     // -- solo aparece en su propio conteo, para no inflar los demás.
-    async contarPorEstado(empresaId?: EmpresaFiltro) {
+    async contarPorEstado(empresaId?: EmpresaFiltro, personalDe?: number) {
         const client = this.supabase.getClient();
         let query = client
             .from('gastos')
             .select('id, es_personal, pendiente_revision, posible_duplicado_de, comprobantes(id)');
         query = aplicarFiltroEmpresa(query, empresaId);
+        if (personalDe !== undefined) query = query.eq('es_personal', true).eq('usuario_id', personalDe);
 
         const { data, error } = await query;
         if (error) {
@@ -1106,7 +1116,7 @@ export class GastosService {
             .getClient()
             .from('gastos')
             .select(
-                '*, categorias(nombre), proveedores(nombre), pedidos(nombre), comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)',
+                '*, categorias(nombre), proveedores(nombre, ruc), pedidos(nombre), comprobantes(*, comprobante_items(*)), evidencias(*), pagos(*)',
             )
             .eq('id', gastoId)
             .maybeSingle();
@@ -1139,10 +1149,26 @@ export class GastosService {
             categoria_id: number;
             proveedor_id: number;
             pedido_id: number | null;
+            // Proveedor y RUC escritos a mano en el panel (ver
+            // ProveedoresService.resolverDesdePanel). proveedor_ruc undefined = no tocarlo.
+            proveedor_nombre: string;
+            proveedor_ruc: string | null;
+            // Medio de pago del gasto: corrige el del primer pago o crea uno.
+            medio_pago: MedioPago;
         }>,
         empresaId?: EmpresaFiltro | null,
     ) {
+        const { proveedor_nombre, proveedor_ruc, medio_pago, ...campos } = cambios;
+        if (medio_pago !== undefined && !(MEDIOS_PAGO as readonly string[]).includes(medio_pago)) {
+            throw new BadRequestException('Medio de pago no válido.');
+        }
         const gastoActual = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
+
+        if (proveedor_nombre !== undefined || proveedor_ruc !== undefined) {
+            const nombre = proveedor_nombre ?? gastoActual.proveedores?.nombre ?? '';
+            const proveedor = await this.proveedoresService.resolverDesdePanel(nombre, proveedor_ruc, gastoActual.empresa_id);
+            campos.proveedor_id = proveedor.id;
+        }
 
         // RF-11: el pedido debe pertenecer a la MISMA empresa del gasto, no
         // a cualquiera de las del usuario. Se valida contra
@@ -1159,7 +1185,7 @@ export class GastosService {
             .getClient()
             .from('gastos')
             .update({
-                ...cambios,
+                ...campos,
                 // Confirmar desde el panel resuelve la revisión pendiente,
                 // igual que la confirmación por Telegram.
                 pendiente_revision: false,
@@ -1179,6 +1205,9 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error actualizando el gasto: ${error.message}`);
         }
+        if (medio_pago !== undefined) {
+            await this.establecerMedioPago(gastoId, medio_pago, Number(data.monto) || 0);
+        }
         this.gateway.notificarCambio(data.empresa_id, gastoId, 'actualizado');
 
         // Si el usuario corrigió/asignó la categoría a mano desde el panel
@@ -1190,10 +1219,10 @@ export class GastosService {
         // también haya venido en este mismo PATCH) y saber si es
         // personal o empresa -- si `es_personal` no vino en este PATCH,
         // se usa el valor que ya tenía el gasto.
-        const proveedorId = cambios.proveedor_id ?? gastoActual.proveedor_id;
-        if (cambios.categoria_id !== undefined && proveedorId) {
-            const esPersonal = cambios.es_personal ?? gastoActual.es_personal;
-            await this.proveedoresService.guardarSugerencia(proveedorId, cambios.categoria_id, esPersonal, data.empresa_id);
+        const proveedorId = campos.proveedor_id ?? gastoActual.proveedor_id;
+        if (campos.categoria_id !== undefined && proveedorId) {
+            const esPersonal = campos.es_personal ?? gastoActual.es_personal;
+            await this.proveedoresService.guardarSugerencia(proveedorId, campos.categoria_id, esPersonal, data.empresa_id);
         }
 
         return data;
@@ -1410,6 +1439,25 @@ export class GastosService {
             throw new InternalServerErrorException(`Error guardando el pago: ${error.message}`);
         }
         return data;
+    }
+
+    // El panel muestra un solo medio de pago por gasto (el del primer pago):
+    // se corrige ese, o se crea un pago por el monto del gasto si no tenía ninguno.
+    private async establecerMedioPago(gastoId: number, medio: MedioPago, monto: number) {
+        const client = this.supabase.getClient();
+        const { data: pago, error } = await client
+            .from('pagos')
+            .select('id')
+            .eq('gasto_id', gastoId)
+            .order('id', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+        if (error) throw new InternalServerErrorException(`Error buscando el pago: ${error.message}`);
+
+        const { error: errorGuardar } = pago
+            ? await client.from('pagos').update({ medio }).eq('id', pago.id)
+            : await client.from('pagos').insert({ gasto_id: gastoId, medio, monto });
+        if (errorGuardar) throw new InternalServerErrorException(`Error guardando el medio de pago: ${errorGuardar.message}`);
     }
 
     private async insertarEvidencia(gastoId: number, datos: DatosEvidencia) {

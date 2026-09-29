@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearEmpresaDto } from './dto/crear-empresa.dto';
 import { ActualizarEmpresaDto } from './dto/actualizar-empresa.dto';
@@ -8,6 +8,9 @@ export interface Empresa {
     nombre: string;
     activa: boolean;
     logo_url: string | null;
+    ruc: string | null;
+    direccion: string | null;
+    moneda: string;
     creado_en: string;
 }
 
@@ -63,7 +66,11 @@ export class EmpresasService {
     async actualizarLogo(id: number, file: Express.Multer.File): Promise<Empresa> {
         await this.obtenerPorId(id); // valida que exista, 404 si no
 
-        const extension = file.originalname.split('.').pop() || 'png';
+        const extensiones: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+        const extension = file ? extensiones[file.mimetype] : undefined;
+        if (!extension) {
+            throw new BadRequestException('El logo debe ser una imagen PNG, JPG o WebP.');
+        }
         const path = `${id}/logo.${extension}`;
 
         const { error: errorSubida } = await this.supabase
@@ -111,10 +118,13 @@ export class EmpresasService {
     }
 
     async actualizar(id: number, dto: ActualizarEmpresaDto): Promise<Empresa> {
-        const cambios: Partial<Pick<Empresa, 'nombre' | 'activa' | 'logo_url'>> = {};
+        const cambios: Partial<Pick<Empresa, 'nombre' | 'activa' | 'logo_url' | 'ruc' | 'direccion' | 'moneda'>> = {};
         if (dto.nombre !== undefined) cambios.nombre = dto.nombre;
         if (dto.activa !== undefined) cambios.activa = dto.activa;
         if (dto.logo_url !== undefined) cambios.logo_url = dto.logo_url;
+        if (dto.ruc !== undefined) cambios.ruc = dto.ruc || null;
+        if (dto.direccion !== undefined) cambios.direccion = dto.direccion?.trim() || null;
+        if (dto.moneda !== undefined) cambios.moneda = dto.moneda;
 
         const { data, error } = await this.supabase
             .getClient()

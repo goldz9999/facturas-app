@@ -1,6 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
-import { EmpresaRol, empresasDeFilas, esSuperAdmin } from '../auth/roles-empresa';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { EmpresaRol, ampliarPropietario, empresasDeFilas, esPropietarioEnAlguna, esSuperAdmin } from '../auth/roles-empresa';
+
+// Empresas del usuario con su rol. Un propietario ve además todas las empresas
+// activas (como propietario): solo en ese caso se consulta la tabla empresas.
+export async function empresasConAlcance(
+    client: SupabaseClient,
+    filas: { empresa_id: number; rol?: string | null }[] | null,
+    rolGlobal: string,
+): Promise<EmpresaRol[]> {
+    const empresas = empresasDeFilas(filas, rolGlobal);
+    if (!esPropietarioEnAlguna(empresas)) return empresas;
+    const { data, error } = await client.from('empresas').select('id').eq('activa', true);
+    if (error) throw new Error(`Error consultando empresas: ${error.message}`);
+    return ampliarPropietario(empresas, (data ?? []).map((e: { id: number }) => e.id));
+}
 
 export interface UsuarioContexto {
     id: number;
@@ -39,7 +54,7 @@ export class UsuarioContextoService {
         if (error) throw new Error(`Error consultando usuario: ${error.message}`);
         if (!data) return null;
 
-        const empresas = empresasDeFilas(data.usuario_empresas as any, data.rol);
+        const empresas = await empresasConAlcance(this.supabaseService.getClient(), data.usuario_empresas as any, data.rol);
         return {
             id: data.id,
             email: data.email,

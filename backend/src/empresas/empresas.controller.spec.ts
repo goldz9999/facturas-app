@@ -26,6 +26,11 @@ describe('EmpresasController.actualizar', () => {
         await c.actualizar(2, { nombre: 'Nueva', activa: false, logo_url: 'x' } as any, admin(2));
         expect(svc.actualizar).toHaveBeenCalledWith(2, { nombre: 'Nueva' });
     });
+    it('un administrador edita RUC, dirección y moneda de su empresa activa', async () => {
+        const { c, svc } = mk();
+        await c.actualizar(2, { ruc: '20123456789', direccion: 'Av. Lima 123', moneda: 'USD', activa: false } as any, admin(2));
+        expect(svc.actualizar).toHaveBeenCalledWith(2, { ruc: '20123456789', direccion: 'Av. Lima 123', moneda: 'USD' });
+    });
     it('no puede tocar otra empresa', async () => {
         const { c, svc } = mk();
         await expect(c.actualizar(1, { nombre: 'X' } as any, admin(2))).rejects.toThrow(ForbiddenException);
@@ -35,5 +40,17 @@ describe('EmpresasController.actualizar', () => {
         const { c, svc } = mk();
         await c.actualizar(9, { activa: false } as any, { user: { rol: 'super_admin', es_super_admin: true, empresa_activa_id: null } });
         expect(svc.actualizar).toHaveBeenCalledWith(9, { activa: false });
+    });
+});
+
+describe('EmpresasController.subirLogo', () => {
+    const file = { mimetype: 'image/png' } as any;
+    it('un administrador sube el logo de su empresa activa, no el de otra', async () => {
+        const svc = { actualizarLogo: jest.fn().mockResolvedValue({ id: 2 }) };
+        const c = new EmpresasController(svc as any);
+        const req = { user: { rol: 'admin', es_super_admin: false, empresa_activa_id: 2 } };
+        await expect(c.subirLogo(1, file, req)).rejects.toThrow(ForbiddenException);
+        await c.subirLogo(2, file, req);
+        expect(svc.actualizarLogo).toHaveBeenCalledWith(2, file);
     });
 });

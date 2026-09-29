@@ -54,22 +54,26 @@ export class EmpresasController {
         return this.empresasService.crear(dto, file);
     }
 
-    // Un administrador/propietario solo puede renombrar SU empresa activa; activar/desactivar
-    // y el logo siguen siendo del super admin.
+    // Un administrador/propietario solo puede editar los datos de SU empresa activa
+    // (nombre, RUC, dirección, moneda); activar/desactivar sigue siendo del super admin.
     @Patch(':id')
     @Roles('super_admin', 'admin')
     async actualizar(@Param('id', ParseIntPipe) id: number, @Body() dto: ActualizarEmpresaDto, @Request() req) {
-        if (req.user.es_super_admin) return this.empresasService.actualizar(id, dto);
+        if (req.user.es_super_admin) return this.empresasService.actualizar(id, { ...dto, logo_url: undefined });
         if (req.user.empresa_activa_id !== id) {
             throw new ForbiddenException('Solo puedes modificar la empresa activa.');
         }
-        return this.empresasService.actualizar(id, { nombre: dto.nombre });
+        const { nombre, ruc, direccion, moneda } = dto;
+        return this.empresasService.actualizar(id, { nombre, ruc, direccion, moneda });
     }
 
     @Patch(':id/logo')
-    @Roles('super_admin')
+    @Roles('super_admin', 'admin')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 3 * 1024 * 1024 } })) // 3MB
-    subirLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File) {
+    async subirLogo(@Param('id', ParseIntPipe) id: number, @UploadedFile() file: Express.Multer.File, @Request() req) {
+        if (!req.user.es_super_admin && req.user.empresa_activa_id !== id) {
+            throw new ForbiddenException('Solo puedes modificar la empresa activa.');
+        }
         return this.empresasService.actualizarLogo(id, file);
     }
 
