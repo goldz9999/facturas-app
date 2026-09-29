@@ -105,3 +105,19 @@ describe('UsuariosController — rol por empresa', () => {
         expect(service.actualizar).toHaveBeenCalledWith(5, { rol_empresa: 'contador' }, undefined, 7);
     });
 });
+
+describe('UsuariosController — permiso de gastos personales', () => {
+    it('un administrador no puede darlo ni quitarlo', async () => {
+        const { c, service } = montar();
+        await expect(c.actualizar(5, { puede_registrar_personal: true } as any, admin())).rejects.toThrow(ForbiddenException);
+        await expect(c.actualizar(5, { puede_registrar_personal: false } as any, admin())).rejects.toThrow(ForbiddenException);
+        expect(() => c.crear({ nombre: 'x', puede_registrar_personal: true } as any, admin())).toThrow(ForbiddenException);
+        expect(service.actualizar).not.toHaveBeenCalled();
+    });
+
+    it('el propietario sí lo decide', async () => {
+        const { c, service } = montar();
+        await c.actualizar(5, { puede_registrar_personal: true } as any, admin({ rol_empresa: 'propietario' }));
+        expect(service.actualizar).toHaveBeenCalledWith(5, { puede_registrar_personal: true }, 2);
+    });
+});

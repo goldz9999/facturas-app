@@ -7,6 +7,8 @@ import { EmpresasService } from '../empresas/empresas.service';
 import {
     EmpresaRol,
     empresasDeFilas,
+    esSuperAdmin,
+    puedeRegistrarPersonal,
     esRolEmpresa,
     RolEmpresa,
     rolEmpresaActualizado,
@@ -60,6 +62,8 @@ export class UsuariosService {
         const empresas = empresasDeFilas(usuario_empresas ?? null, resto.rol);
         return {
             ...resto,
+            // Permiso efectivo: un propietario siempre puede, aunque su flag esté apagado.
+            puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(resto as any), empresas, puede_registrar_personal: resto.puede_registrar_personal }),
             empresa_ids: empresas.map((e) => e.empresa_id),
             empresas,
             tiene_password: !!password_hash,
@@ -153,7 +157,8 @@ export class UsuariosService {
                 activo: dto.activo ?? true,
                 email: dto.email ?? null,
                 password_hash: passwordHash,
-                puede_registrar_personal: dto.puede_registrar_personal ?? true,
+                // Nadie registra gastos personales salvo que un propietario lo permita.
+                puede_registrar_personal: dto.puede_registrar_personal ?? false,
             })
             .select('*')
             .single();

@@ -1,4 +1,6 @@
 import {
+    ampliarPropietario,
+    puedeRegistrarPersonal,
     elegirEmpresaActiva,
     EmpresaRol,
     empresasDeFilas,
@@ -145,5 +147,30 @@ describe('validarGestion', () => {
     });
     it('un super admin gestiona a cualquiera', () => {
         expect(() => validarGestion(superAdmin, objetivo('propietario', true))).not.toThrow();
+    });
+});
+
+describe('ampliarPropietario', () => {
+    it('un propietario accede a todas las empresas activas como propietario, las suyas primero', () => {
+        const r = ampliarPropietario([{ empresa_id: 3, rol: 'propietario' }, { empresa_id: 1, rol: 'contador' }], [5, 1, 2, 3]);
+        expect(r).toEqual([
+            { empresa_id: 3, rol: 'propietario' },
+            { empresa_id: 1, rol: 'contador' },
+            { empresa_id: 2, rol: 'propietario' },
+            { empresa_id: 5, rol: 'propietario' },
+        ]);
+    });
+    it('quien no es propietario en ninguna no gana acceso', () => {
+        const propias = [{ empresa_id: 1, rol: 'administrador' as const }];
+        expect(ampliarPropietario(propias, [1, 2, 3])).toBe(propias);
+    });
+});
+
+describe('puedeRegistrarPersonal', () => {
+    it('propietario y super admin siempre; el resto según el flag', () => {
+        expect(puedeRegistrarPersonal({ es_super_admin: false, empresas: [{ empresa_id: 1, rol: 'propietario' }], puede_registrar_personal: false })).toBe(true);
+        expect(puedeRegistrarPersonal({ es_super_admin: true, empresas: [], puede_registrar_personal: false })).toBe(true);
+        expect(puedeRegistrarPersonal({ es_super_admin: false, empresas: [{ empresa_id: 1, rol: 'administrador' }], puede_registrar_personal: false })).toBe(false);
+        expect(puedeRegistrarPersonal({ es_super_admin: false, empresas: [{ empresa_id: 1, rol: 'empleado' }], puede_registrar_personal: true })).toBe(true);
     });
 });

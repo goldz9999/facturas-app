@@ -2,10 +2,16 @@ import { UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 
-function servicio(fila: Record<string, unknown>) {
+function servicio(fila: Record<string, unknown>, empresasActivas: number[] = []) {
     const supabase = {
         getClient: () => ({
-            from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: fila, error: null }) }) }) }),
+            from: (tabla: string) => ({
+                select: () => ({
+                    eq: () => (tabla === 'empresas'
+                        ? Promise.resolve({ data: empresasActivas.map((id) => ({ id })), error: null })
+                        : { maybeSingle: async () => ({ data: fila, error: null }) }),
+                }),
+            }),
         }),
     };
     const jwt = { signAsync: jest.fn().mockResolvedValue('tok') };
@@ -51,6 +57,13 @@ describe('AuthService.login', () => {
         const r = await servicio({ ...base, usuario_empresas: [{ empresa_id: 2, rol: null }] })
             .login({ email: 'l@x.pe', password: 'clave123' } as any);
         expect(r.usuario.empresas).toEqual([{ empresa_id: 2, rol: 'administrador' }]);
+    });
+
+    it('un propietario recibe todas las empresas activas', async () => {
+        const r = await servicio({ ...base, usuario_empresas: [{ empresa_id: 2, rol: 'propietario' }] }, [1, 2, 3])
+            .login({ email: 'l@x.pe', password: 'clave123' } as any);
+        expect(r.usuario.empresa_ids).toEqual([2, 1, 3]);
+        expect(r.usuario.empresas.every((e) => e.rol === 'propietario')).toBe(true);
     });
 
     it('contraseña incorrecta lanza Unauthorized', async () => {

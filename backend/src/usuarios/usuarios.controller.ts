@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { esSuperAdmin, resolverRolAlta, validarGestion } from '../auth/roles-empresa';
+import { esSuperAdmin, resolverRolAlta, validarGestion, validarPermisoPersonal } from '../auth/roles-empresa';
 import { UsuariosService } from './usuarios.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
@@ -60,6 +60,7 @@ export class UsuariosController {
         // Valida que quien crea pueda otorgar ese rol (p. ej. solo un
         // propietario crea propietarios) y deriva el rol legacy.
         const alta = resolverRolAlta(dto, { es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa });
+        validarPermisoPersonal({ es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa }, dto.puede_registrar_personal || undefined);
         if (req.user.rol === 'admin') {
             if (dto.rol === 'super_admin') {
                 throw new ForbiddenException('Un admin de empresa no puede crear super_admin');
@@ -90,6 +91,7 @@ export class UsuariosController {
         @Request() req,
         @Query('empresa_id') empresaIdQuery?: string,
     ) {
+        validarPermisoPersonal({ es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa }, dto.puede_registrar_personal);
         if (dto.rol_empresa !== undefined) {
             if (id === req.user.id && dto.rol_empresa !== req.user.rol_empresa) {
                 throw new ForbiddenException('No puedes cambiar tu propio rol');
