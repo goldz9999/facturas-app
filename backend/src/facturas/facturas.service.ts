@@ -383,6 +383,30 @@ export class FacturasService {
             factura.empresa || null,
           );
         }
+        // La factura (o el pago) llegó después y se agrupó a un gasto ya creado:
+        // recién ahora se conocen su número, RUC u operación, así que se busca
+        // duplicado igual que al crear uno (antes se saltaba este caso).
+        if (!esAudio && candidato.posible_duplicado_de == null) {
+          const numero = pareceFactura ? datosComprobante.numero : null;
+          const rucFactura = pareceFactura ? factura.ruc || null : null;
+          const operacion = datosPago?.numero_operacion || null;
+          const propio = await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(usuarioId, candidato.id, numero, rucFactura, operacion);
+          const duplicado = propio ?? (await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
+            usuarioId,
+            Number(candidato.monto) || montoDetectado,
+            candidato.fecha,
+            numero,
+            proveedorId ?? candidato.proveedor_id,
+            rucFactura,
+            operacion,
+            candidato.empresa_id,
+            candidato.id,
+          ));
+          if (duplicado) {
+            await this.gastosService.marcarPosibleDuplicado(candidato.id, duplicado.gasto.id);
+            posibleDuplicado = { usuario_nombre: duplicado.usuario_nombre, nivel: duplicado.nivel };
+          }
+        }
         vinculadoA = {
           gasto_id: candidato.id,
           monto: candidato.monto,
@@ -441,6 +465,8 @@ export class FacturasService {
               proveedorId,
               factura.ruc || null,
               datosPago?.numero_operacion || null,
+              gasto.empresa_id,
+              gastoId,
             );
             if (duplicado) {
               await this.gastosService.marcarPosibleDuplicado(gastoId, duplicado.gasto.id);

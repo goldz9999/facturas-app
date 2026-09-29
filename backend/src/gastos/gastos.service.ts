@@ -558,6 +558,14 @@ export class GastosService {
     // (además del match por proveedor_id, cubre el caso borde de dos filas
     // de `proveedores` con el mismo RUC), o el número de operación de Yape.
     // Similitud de imagen queda fuera todavía.
+    // Duplicado entre usuarios de la MISMA empresa (dos personas suben el mismo
+    // pago). Dos formas de encontrarlo:
+    // - fuerte: misma operación de Yape/transferencia, o el mismo número de
+    //   comprobante del mismo emisor (RUC o proveedor). No depende de la fecha
+    //   ni del monto leídos por la IA, que pueden variar entre dos fotos.
+    // - débil: misma fecha y mismo monto (±0.50).
+    // Se prefiere un candidato fuerte. Los duplicados ya confirmados no cuentan
+    // como original.
     async buscarPosibleDuplicadoEntreUsuarios(
         usuarioId: number,
         monto: number,
@@ -566,62 +574,50 @@ export class GastosService {
         proveedorId?: number | null,
         ruc?: string | null,
         numeroOperacion?: string | null,
+        empresaId?: number | null,
+        gastoIdActual?: number,
     ) {
         const tolerancia = 0.5; // soles
 
-        const { data, error } = await this.supabase
+        let query = this.supabase
             .getClient()
             .from('gastos')
-            .select('*, usuarios(nombre), comprobantes(*), proveedores(ruc), pagos(numero_operacion)')
+            .select('*, usuarios(nombre), comprobantes(numero), proveedores(ruc), pagos(numero_operacion)')
             .neq('usuario_id', usuarioId)
-            .eq('fecha', fecha)
             .order('creado_en', { ascending: false })
-            .limit(20);
+            .limit(200);
+        if (empresaId != null) query = query.eq('empresa_id', empresaId);
+        if (gastoIdActual != null) query = query.neq('id', gastoIdActual);
 
+        const { data, error } = await query;
         if (error) {
             throw new InternalServerErrorException(
                 `Error buscando posibles duplicados: ${error.message}`,
             );
         }
 
-        const candidato = (data ?? []).find(
-            (g) => g.monto != null && Math.abs(Number(g.monto) - monto) <= tolerancia,
-        );
+        const senales = (g: any) => {
+            const mismoNumero = !!numeroComprobante && (g.comprobantes ?? []).some((c: any) => c.numero && c.numero === numeroComprobante);
+            const mismoProveedor = !!proveedorId && g.proveedor_id === proveedorId;
+            const mismoRuc = !!ruc && !!g.proveedores?.ruc && g.proveedores.ruc === ruc;
+            const mismaOperacion = !!numeroOperacion && (g.pagos ?? []).some((p: any) => p.numero_operacion && p.numero_operacion === numeroOperacion);
+            const mismoMontoYFecha = g.fecha === fecha && g.monto != null && Math.abs(Number(g.monto) - monto) <= tolerancia;
+            return {
+                fuerte: mismaOperacion || (mismoNumero && (mismoRuc || mismoProveedor)),
+                debil: mismoMontoYFecha,
+                apoyo: mismoNumero || mismoRuc || mismoProveedor,
+            };
+        };
+        const originales = (data ?? []).filter((g: any) => !(g.posible_duplicado_de != null && !g.pendiente_revision));
+        const candidato =
+            originales.find((g) => senales(g).fuerte) ?? originales.find((g) => senales(g).debil);
         if (!candidato) return null;
 
-        const coincideNumero =
-            !!numeroComprobante &&
-            Array.isArray(candidato.comprobantes) &&
-            candidato.comprobantes.some((c: any) => c.numero && c.numero === numeroComprobante);
-
-        // Mismo proveedor (identificado por RUC vía buscarOCrear, ver
-        // ProveedoresService) es otra señal fuerte: si Wilber y su esposa
-        // suben la misma foto de la misma ferretería el mismo día por el
-        // mismo monto, es altamente probable que sea el mismo pago aunque
-        // no se haya podido leer el número de comprobante.
-        const coincideProveedor = !!proveedorId && candidato.proveedor_id === proveedorId;
-
-        // RUC crudo de esta factura contra el RUC guardado en el proveedor
-        // del candidato. Complementa a coincideProveedor: por lo general
-        // ambos coinciden juntos (mismo RUC → mismo proveedor_id, gracias a
-        // ProveedoresService.buscarOCrear), pero esto también agarra el caso
-        // borde de dos filas de `proveedores` con el mismo RUC (ej. una se
-        // creó por nombre antes de que existiera match por RUC).
-        const rucCandidato = (candidato as any).proveedores?.ruc ?? null;
-        const coincideRuc = !!ruc && !!rucCandidato && ruc === rucCandidato;
-
-        // Número de operación de Yape/transferencia (tabla `pagos`, sección
-        // 7/8). Señal fuerte porque es un identificador único del banco/app,
-        // no algo que dos pagos distintos compartan por casualidad.
-        const coincideOperacion =
-            !!numeroOperacion &&
-            Array.isArray((candidato as any).pagos) &&
-            (candidato as any).pagos.some((p: any) => p.numero_operacion && p.numero_operacion === numeroOperacion);
-
+        const s = senales(candidato);
         return {
             gasto: candidato,
-            usuario_nombre: candidato.usuarios?.nombre ?? 'otro usuario',
-            nivel: coincideNumero || coincideProveedor || coincideRuc || coincideOperacion ? ('alta' as const) : ('media' as const),
+            usuario_nombre: (candidato as any).usuarios?.nombre ?? 'otro usuario',
+            nivel: s.fuerte || s.apoyo ? ('alta' as const) : ('media' as const),
         };
     }
 
