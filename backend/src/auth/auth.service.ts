@@ -3,13 +3,16 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { LoginDto } from './dto/login.dto';
+import { EmpresaRol, empresasDeFilas, esSuperAdmin } from './roles-empresa';
 
 export interface UsuarioAutenticado {
     id: number;
     nombre: string | null;
     email: string | null;
     rol: string;
+    es_super_admin: boolean;
     empresa_ids: number[];
+    empresas: EmpresaRol[];
     puede_registrar_personal: boolean;
     ultima_empresa_id: number | null;
 }
@@ -28,7 +31,7 @@ export class AuthService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, password_hash, rol, activo, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id)')
+            .select('id, nombre, email, password_hash, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
             .eq('email', dto.email)
             .maybeSingle();
 
@@ -49,12 +52,15 @@ export class AuthService {
             throw new UnauthorizedException('Credenciales inválidas');
         }
 
+        const empresas = empresasDeFilas(data.usuario_empresas as any, data.rol);
         const usuario: UsuarioAutenticado = {
             id: data.id,
             nombre: data.nombre,
             email: data.email,
             rol: data.rol,
-            empresa_ids: (data.usuario_empresas ?? []).map((e: { empresa_id: number }) => e.empresa_id),
+            es_super_admin: esSuperAdmin(data),
+            empresa_ids: empresas.map((e) => e.empresa_id),
+            empresas,
             puede_registrar_personal: data.puede_registrar_personal,
             ultima_empresa_id: data.ultima_empresa_id ?? null,
         };
