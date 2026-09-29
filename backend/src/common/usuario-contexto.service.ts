@@ -19,7 +19,9 @@ export async function empresasConAlcance(
 
 export interface UsuarioContexto {
     id: number;
+    nombre: string | null;
     email: string | null;
+    avatar_url: string | null;
     rol: string; // columna legacy usuarios.rol
     activo: boolean;
     es_super_admin: boolean;
@@ -47,7 +49,7 @@ export class UsuarioContextoService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, email, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
+            .select('id, nombre, email, avatar_url, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
             .eq('id', usuarioId)
             .maybeSingle();
 
@@ -57,7 +59,9 @@ export class UsuarioContextoService {
         const empresas = await empresasConAlcance(this.supabaseService.getClient(), data.usuario_empresas as any, data.rol);
         return {
             id: data.id,
+            nombre: data.nombre ?? null,
             email: data.email,
+            avatar_url: data.avatar_url ?? null,
             rol: data.rol,
             activo: data.activo,
             es_super_admin: esSuperAdmin(data),

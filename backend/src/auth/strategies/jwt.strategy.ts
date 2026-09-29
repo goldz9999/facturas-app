@@ -44,7 +44,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         // Lo que retorna aquí queda disponible como req.user en los controllers.
         return {
             id: usuario.id,
+            nombre: usuario.nombre,
             email: usuario.email,
+            avatar_url: usuario.avatar_url,
             rol: rolLegacy(usuario.es_super_admin, activa?.rol ?? null),
             rol_empresa: usuario.es_super_admin ? 'propietario' : (activa?.rol ?? null),
             es_super_admin: usuario.es_super_admin,

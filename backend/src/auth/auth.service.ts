@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, InternalServerErrorException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ActualizarPerfilDto } from './dto/actualizar-perfil.dto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
@@ -16,7 +17,10 @@ export interface UsuarioAutenticado {
     empresas: EmpresaRol[];
     puede_registrar_personal: boolean;
     ultima_empresa_id: number | null;
+    avatar_url: string | null;
 }
+
+const EXTENSION_IMAGEN: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 
 @Injectable()
 export class AuthService {
@@ -32,7 +36,7 @@ export class AuthService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, password_hash, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
+            .select('id, nombre, email, password_hash, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, avatar_url, usuario_empresas(empresa_id, rol)')
             .eq('email', dto.email)
             .maybeSingle();
 
@@ -64,6 +68,7 @@ export class AuthService {
             empresas,
             puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(data), empresas, puede_registrar_personal: data.puede_registrar_personal }),
             ultima_empresa_id: data.ultima_empresa_id ?? null,
+            avatar_url: data.avatar_url ?? null,
         };
 
         const access_token = await this.jwtService.signAsync({
@@ -106,5 +111,78 @@ export class AuthService {
         if (error) throw new Error(`Error guardando la empresa activa: ${error.message}`);
 
         return { ultima_empresa_id: empresaId };
+    }
+
+    // Configuración personal: cada usuario edita su nombre, correo y contraseña.
+    // Correo y contraseña piden la contraseña actual (si alguien toma una sesión
+    // abierta no puede quedarse con la cuenta).
+    async actualizarPerfil(usuarioId: number, dto: ActualizarPerfilDto) {
+        const client = this.supabaseService.getClient();
+        const { data: actual, error } = await client
+            .from('usuarios')
+            .select('id, email, password_hash')
+            .eq('id', usuarioId)
+            .maybeSingle();
+        if (error) throw new InternalServerErrorException(`Error consultando el usuario: ${error.message}`);
+        if (!actual) throw new NotFoundException('Usuario no encontrado');
+
+        // El login compara el correo tal cual: se guarda sin cambiar mayúsculas.
+        const email = dto.email?.trim();
+        const cambiaEmail = email !== undefined && email !== (actual.email ?? '');
+        const cambiaPassword = !!dto.password_nueva;
+        if (cambiaEmail || cambiaPassword) {
+            if (!dto.password_actual) throw new BadRequestException('Escribe tu contraseña actual para cambiar el correo o la contraseña.');
+            // Una cuenta sin contraseña (solo Telegram) no puede validarse aquí.
+            const valida = !!actual.password_hash && (await bcrypt.compare(dto.password_actual, actual.password_hash));
+            if (!valida) throw new BadRequestException('La contraseña actual no es correcta.');
+        }
+
+        const cambios: Record<string, unknown> = {};
+        if (dto.nombre !== undefined) cambios.nombre = dto.nombre.trim();
+        if (cambiaEmail) cambios.email = email;
+        if (cambiaPassword) cambios.password_hash = await bcrypt.hash(dto.password_nueva!, 10);
+        if (Object.keys(cambios).length === 0) return this.perfil(usuarioId);
+
+        const { error: errorUpdate } = await client.from('usuarios').update(cambios).eq('id', usuarioId);
+        if (errorUpdate) {
+            if (errorUpdate.code === '23505') throw new ConflictException('Ese correo ya está registrado.');
+            throw new InternalServerErrorException(`Error guardando el perfil: ${errorUpdate.message}`);
+        }
+        return this.perfil(usuarioId);
+    }
+
+    // Foto de perfil: se guarda en el bucket público "avatares" (una por usuario).
+    async subirAvatar(usuarioId: number, file: Express.Multer.File | undefined) {
+        const extension = file ? EXTENSION_IMAGEN[file.mimetype] : undefined;
+        if (!file || !extension) throw new BadRequestException('La foto debe ser una imagen PNG, JPG o WebP.');
+        const storage = this.supabaseService.getClient().storage.from('avatares');
+        const path = `${usuarioId}/avatar.${extension}`;
+        const { error } = await storage.upload(path, file.buffer, { contentType: file.mimetype, upsert: true });
+        if (error) throw new InternalServerErrorException(`Error subiendo la foto: ${error.message}`);
+        // ?v= evita que el navegador siga mostrando la foto anterior (misma URL).
+        const url = `${storage.getPublicUrl(path).data.publicUrl}?v=${Date.now()}`;
+        return this.guardarAvatar(usuarioId, url);
+    }
+
+    async quitarAvatar(usuarioId: number) {
+        return this.guardarAvatar(usuarioId, null);
+    }
+
+    private async guardarAvatar(usuarioId: number, url: string | null) {
+        const { error } = await this.supabaseService.getClient().from('usuarios').update({ avatar_url: url }).eq('id', usuarioId);
+        if (error) throw new InternalServerErrorException(`Error guardando la foto: ${error.message}`);
+        return this.perfil(usuarioId);
+    }
+
+    private async perfil(usuarioId: number): Promise<{ id: number; nombre: string | null; email: string | null; avatar_url: string | null }> {
+        const { data, error } = await this.supabaseService
+            .getClient()
+            .from('usuarios')
+            .select('id, nombre, email, avatar_url')
+            .eq('id', usuarioId)
+            .maybeSingle();
+        if (error) throw new InternalServerErrorException(`Error consultando el perfil: ${error.message}`);
+        if (!data) throw new NotFoundException('Usuario no encontrado');
+        return data;
     }
 }
