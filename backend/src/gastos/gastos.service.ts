@@ -4,6 +4,7 @@ import { ProveedoresService } from '../proveedores/proveedores.service';
 import { convertirImagenAWebp } from '../facturas/imagen.util';
 import { GastosGateway } from './gastos.gateway';
 import { PedidosService } from '../pedidos/pedidos.service';
+import { UsuarioContextoService } from '../common/usuario-contexto.service';
 
 // Mismo bucket que usa facturas.service.ts para las evidencias que llegan
 // por Telegram/upload -- se repite acá (en vez de importar desde
@@ -149,7 +150,15 @@ export class GastosService {
         private proveedoresService: ProveedoresService,
         private gateway: GastosGateway,
         private pedidosService: PedidosService,
+        private usuarioContexto: UsuarioContextoService,
     ) { }
+
+    // Un gasto solo puede ser personal si su dueño tiene permiso: el propietario
+    // siempre; el resto solo si un propietario se lo activó.
+    private async personalPermitido(usuarioId: number | null | undefined): Promise<boolean> {
+        if (usuarioId == null) return false;
+        return (await this.usuarioContexto.obtener(usuarioId))?.puede_registrar_personal ?? false;
+    }
 
     // Crea un gasto y, si vienen, su comprobante, evidencia, pago y detalle
     // de items asociados en el mismo flujo.
@@ -166,6 +175,8 @@ export class GastosService {
         // Snapshot del nombre: si el usuario se elimina más adelante (ej. ya
         // no trabaja en la empresa), el gasto sigue mostrando quién lo hizo.
         const nombreUsuario = await this.obtenerNombreDeUsuario(params.usuario_id);
+        // La sugerencia aprendida del proveedor puede decir "personal": sin permiso, queda de empresa.
+        const esPersonal = !!params.es_personal && (await this.personalPermitido(params.usuario_id));
 
         const { data: gasto, error: errorGasto } = await client
             .from('gastos')
@@ -175,7 +186,7 @@ export class GastosService {
                 empresa_id: empresaId,
                 categoria_id: params.categoria_id ?? null,
                 proveedor_id: params.proveedor_id ?? null,
-                es_personal: params.es_personal ?? false,
+                es_personal: esPersonal,
                 descripcion: params.descripcion ?? null,
                 monto: params.monto,
                 fecha: params.fecha,
@@ -756,6 +767,10 @@ export class GastosService {
         proveedorId?: number | null,
         descripcion?: string | null,
     ) {
+        if (esPersonal) {
+            const { data: fila } = await this.supabase.getClient().from('gastos').select('usuario_id').eq('id', gastoId).maybeSingle();
+            if (!(await this.personalPermitido(fila?.usuario_id))) esPersonal = false;
+        }
         const update: Record<string, any> = { categoria_id: categoriaId, es_personal: esPersonal };
         if (proveedorId !== undefined && proveedorId !== null) update.proveedor_id = proveedorId;
         if (descripcion !== undefined && descripcion !== null) update.descripcion = descripcion;
@@ -1163,6 +1178,10 @@ export class GastosService {
             throw new BadRequestException('Medio de pago no válido.');
         }
         const gastoActual = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
+
+        if (campos.es_personal === true && !gastoActual.es_personal && !(await this.personalPermitido(gastoActual.usuario_id))) {
+            throw new BadRequestException('Quien registró este gasto no tiene permitido registrar gastos personales. Lo decide el propietario.');
+        }
 
         if (proveedor_nombre !== undefined || proveedor_ruc !== undefined) {
             const nombre = proveedor_nombre ?? gastoActual.proveedores?.nombre ?? '';

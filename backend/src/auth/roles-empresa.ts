@@ -119,3 +119,16 @@ export function ampliarPropietario(empresas: EmpresaRol[], todasActivas: number[
         .map((empresa_id) => ({ empresa_id, rol: 'propietario' as RolEmpresa }));
     return [...empresas, ...extra];
 }
+
+// Gastos personales: el propietario (y el super admin) siempre puede
+// registrarlos; el resto solo si un propietario le activó
+// usuarios.puede_registrar_personal.
+export function puedeRegistrarPersonal(u: { es_super_admin: boolean; empresas: EmpresaRol[]; puede_registrar_personal?: boolean | null }): boolean {
+    return u.es_super_admin || esPropietarioEnAlguna(u.empresas) || !!u.puede_registrar_personal;
+}
+
+// Solo un propietario (o super admin) decide quién registra gastos personales.
+export function validarPermisoPersonal(quien: { es_super_admin: boolean; rol_empresa: RolEmpresa | null }, valor: boolean | undefined): void {
+    if (valor === undefined || quien.es_super_admin || quien.rol_empresa === 'propietario') return;
+    throw new ForbiddenException('Solo el propietario decide quién puede registrar gastos personales.');
+}

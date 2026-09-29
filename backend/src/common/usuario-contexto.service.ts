@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { EmpresaRol, ampliarPropietario, empresasDeFilas, esPropietarioEnAlguna, esSuperAdmin } from '../auth/roles-empresa';
+import { EmpresaRol, ampliarPropietario, empresasDeFilas, esPropietarioEnAlguna, esSuperAdmin, puedeRegistrarPersonal } from '../auth/roles-empresa';
 
 // Empresas del usuario con su rol. Un propietario ve además todas las empresas
 // activas (como propietario): solo en ese caso se consulta la tabla empresas.
@@ -61,7 +61,8 @@ export class UsuarioContextoService {
             rol: data.rol,
             activo: data.activo,
             es_super_admin: esSuperAdmin(data),
-            puede_registrar_personal: data.puede_registrar_personal,
+            // Permiso efectivo (propietario siempre; el resto según el flag).
+            puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(data), empresas, puede_registrar_personal: data.puede_registrar_personal }),
             ultima_empresa_id: data.ultima_empresa_id ?? null,
             empresa_ids: empresas.map((e) => e.empresa_id),
             empresas,
