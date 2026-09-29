@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { EmpresaRol, ampliarPropietario, empresasDeFilas, esPropietarioEnAlguna, esSuperAdmin, puedeRegistrarPersonal } from '../auth/roles-empresa';
+import { EmpresaRol, ampliarPropietario, empresasDeFilas, esPropietarioEnAlguna, esSuperAdmin, puedeGestionarTelegram, puedeRegistrarPersonal } from '../auth/roles-empresa';
 
 // Empresas del usuario con su rol. Un propietario ve además todas las empresas
 // activas (como propietario): solo en ese caso se consulta la tabla empresas.
@@ -28,6 +28,7 @@ export interface UsuarioContexto {
     empresa_ids: number[];
     empresas: EmpresaRol[];
     puede_registrar_personal: boolean;
+    puede_gestionar_telegram: boolean;
     ultima_empresa_id: number | null;
 }
 
@@ -49,7 +50,7 @@ export class UsuarioContextoService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, avatar_url, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
+            .select('id, nombre, email, avatar_url, rol, activo, es_super_admin, puede_registrar_personal, puede_gestionar_telegram, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
             .eq('id', usuarioId)
             .maybeSingle();
 
@@ -67,6 +68,7 @@ export class UsuarioContextoService {
             es_super_admin: esSuperAdmin(data),
             // Permiso efectivo (propietario siempre; el resto según el flag).
             puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(data), empresas, puede_registrar_personal: data.puede_registrar_personal }),
+            puede_gestionar_telegram: puedeGestionarTelegram({ es_super_admin: esSuperAdmin(data), empresas, puede_gestionar_telegram: data.puede_gestionar_telegram }),
             ultima_empresa_id: data.ultima_empresa_id ?? null,
             empresa_ids: empresas.map((e) => e.empresa_id),
             empresas,

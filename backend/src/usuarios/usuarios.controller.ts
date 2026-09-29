@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
-import { esSuperAdmin, resolverRolAlta, validarGestion, validarPermisoPersonal } from '../auth/roles-empresa';
+import { esSuperAdmin, resolverRolAlta, validarGestion, validarPermisoPersonal, validarPermisoTelegram } from '../auth/roles-empresa';
 import { UsuariosService } from './usuarios.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
@@ -61,6 +61,9 @@ export class UsuariosController {
         // propietario crea propietarios) y deriva el rol legacy.
         const alta = resolverRolAlta(dto, { es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa });
         validarPermisoPersonal({ es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa }, dto.puede_registrar_personal || undefined);
+        if (dto.telegram_id !== undefined && !req.user.puede_gestionar_telegram) {
+            throw new ForbiddenException('No tienes permiso para gestionar cuentas de Telegram.');
+        }
         if (req.user.rol === 'admin') {
             if (dto.rol === 'super_admin') {
                 throw new ForbiddenException('Un admin de empresa no puede crear super_admin');
@@ -92,6 +95,14 @@ export class UsuariosController {
         @Query('empresa_id') empresaIdQuery?: string,
     ) {
         validarPermisoPersonal({ es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa }, dto.puede_registrar_personal);
+        validarPermisoTelegram({ es_super_admin: req.user.es_super_admin, rol_empresa: req.user.rol_empresa }, dto.puede_gestionar_telegram);
+        // La cuenta de Telegram se gestiona en /telegram/usuarios (con su propio permiso).
+        if (dto.telegram_id !== undefined && !req.user.puede_gestionar_telegram) {
+            throw new ForbiddenException('No tienes permiso para gestionar cuentas de Telegram.');
+        }
+        if (id === req.user.id && dto.puede_gestionar_telegram !== undefined && dto.puede_gestionar_telegram !== req.user.puede_gestionar_telegram) {
+            throw new ForbiddenException('No puedes cambiar tu propio permiso de Telegram');
+        }
         if (dto.rol_empresa !== undefined) {
             if (id === req.user.id && dto.rol_empresa !== req.user.rol_empresa) {
                 throw new ForbiddenException('No puedes cambiar tu propio rol');

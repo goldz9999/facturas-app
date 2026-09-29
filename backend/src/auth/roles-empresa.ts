@@ -132,3 +132,15 @@ export function validarPermisoPersonal(quien: { es_super_admin: boolean; rol_emp
     if (valor === undefined || quien.es_super_admin || quien.rol_empresa === 'propietario') return;
     throw new ForbiddenException('Solo el propietario decide quién puede registrar gastos personales.');
 }
+
+// Cuentas autorizadas del bot de Telegram: el propietario (y el super admin)
+// siempre las gestiona; el resto solo si un propietario le dio el permiso.
+export function puedeGestionarTelegram(u: { es_super_admin: boolean; empresas: EmpresaRol[]; puede_gestionar_telegram?: boolean | null }): boolean {
+    return u.es_super_admin || esPropietarioEnAlguna(u.empresas) || !!u.puede_gestionar_telegram;
+}
+
+// Solo un propietario (o super admin) da o quita el permiso de gestionar Telegram.
+export function validarPermisoTelegram(quien: { es_super_admin: boolean; rol_empresa: RolEmpresa | null }, valor: boolean | undefined): void {
+    if (valor === undefined || quien.es_super_admin || quien.rol_empresa === 'propietario') return;
+    throw new ForbiddenException('Solo el propietario decide quién gestiona las cuentas de Telegram.');
+}

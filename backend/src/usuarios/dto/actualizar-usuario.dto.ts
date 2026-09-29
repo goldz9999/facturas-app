@@ -49,4 +49,9 @@ export class ActualizarUsuarioDto {
     @IsBoolean()
     @IsOptional()
     puede_registrar_personal?: boolean;
+
+    // Si puede vincular/quitar cuentas de Telegram (solo lo decide el propietario).
+    @IsBoolean()
+    @IsOptional()
+    puede_gestionar_telegram?: boolean;
 }

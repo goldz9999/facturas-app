@@ -54,6 +54,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             empresas: usuario.empresas,
             empresa_ids: usuario.empresa_ids,
             puede_registrar_personal: usuario.puede_registrar_personal,
+            puede_gestionar_telegram: usuario.puede_gestionar_telegram,
             ultima_empresa_id: usuario.ultima_empresa_id,
         };
     }

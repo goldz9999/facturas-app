@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { LoginDto } from './dto/login.dto';
-import { EmpresaRol, esSuperAdmin, puedeRegistrarPersonal } from './roles-empresa';
+import { EmpresaRol, esSuperAdmin, puedeGestionarTelegram, puedeRegistrarPersonal } from './roles-empresa';
 import { empresasConAlcance } from '../common/usuario-contexto.service';
 
 export interface UsuarioAutenticado {
@@ -16,6 +16,7 @@ export interface UsuarioAutenticado {
     empresa_ids: number[];
     empresas: EmpresaRol[];
     puede_registrar_personal: boolean;
+    puede_gestionar_telegram: boolean;
     ultima_empresa_id: number | null;
     avatar_url: string | null;
 }
@@ -36,7 +37,7 @@ export class AuthService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, nombre, email, password_hash, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, avatar_url, usuario_empresas(empresa_id, rol)')
+            .select('id, nombre, email, password_hash, rol, activo, es_super_admin, puede_registrar_personal, puede_gestionar_telegram, ultima_empresa_id, avatar_url, usuario_empresas(empresa_id, rol)')
             .eq('email', dto.email)
             .maybeSingle();
 
@@ -67,6 +68,7 @@ export class AuthService {
             empresa_ids: empresas.map((e) => e.empresa_id),
             empresas,
             puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(data), empresas, puede_registrar_personal: data.puede_registrar_personal }),
+            puede_gestionar_telegram: puedeGestionarTelegram({ es_super_admin: esSuperAdmin(data), empresas, puede_gestionar_telegram: data.puede_gestionar_telegram }),
             ultima_empresa_id: data.ultima_empresa_id ?? null,
             avatar_url: data.avatar_url ?? null,
         };

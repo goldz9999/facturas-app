@@ -8,6 +8,7 @@ import {
     EmpresaRol,
     empresasDeFilas,
     esSuperAdmin,
+    puedeGestionarTelegram,
     puedeRegistrarPersonal,
     esRolEmpresa,
     RolEmpresa,
@@ -32,6 +33,7 @@ export interface Usuario {
     tiene_password: boolean;
     es_super_admin?: boolean;
     puede_registrar_personal: boolean;
+    puede_gestionar_telegram: boolean;
     creado_en: string;
 }
 
@@ -42,6 +44,7 @@ interface FilaUsuario {
     rol: string;
     activo: boolean;
     puede_registrar_personal: boolean;
+    puede_gestionar_telegram?: boolean | null;
     creado_en: string;
     password_hash?: string | null;
     usuario_empresas?: Array<{ empresa_id: number; rol?: string | null }>;
@@ -64,6 +67,7 @@ export class UsuariosService {
             ...resto,
             // Permiso efectivo: un propietario siempre puede, aunque su flag esté apagado.
             puede_registrar_personal: puedeRegistrarPersonal({ es_super_admin: esSuperAdmin(resto as any), empresas, puede_registrar_personal: resto.puede_registrar_personal }),
+            puede_gestionar_telegram: puedeGestionarTelegram({ es_super_admin: esSuperAdmin(resto as any), empresas, puede_gestionar_telegram: resto.puede_gestionar_telegram }),
             empresa_ids: empresas.map((e) => e.empresa_id),
             empresas,
             tiene_password: !!password_hash,
@@ -194,6 +198,9 @@ export class UsuariosService {
         if (dto.telegram_id !== undefined) cambios.telegram_id = dto.telegram_id;
         if (dto.puede_registrar_personal !== undefined) {
             cambios.puede_registrar_personal = dto.puede_registrar_personal;
+        }
+        if (dto.puede_gestionar_telegram !== undefined) {
+            cambios.puede_gestionar_telegram = dto.puede_gestionar_telegram;
         }
 
         if (Object.keys(cambios).length > 0) {
@@ -341,5 +348,24 @@ export class UsuariosService {
     async estaAutorizado(telegramId: number | string): Promise<Usuario | null> {
         const usuario = await this.buscarPorTelegramId(telegramId);
         return usuario && usuario.activo ? usuario : null;
+    }
+
+    // Vincula (o quita, con null) la cuenta de Telegram de un usuario: es lo que
+    // el bot usa para autorizarlo (estaAutorizado). Un mismo ID no puede estar en
+    // dos usuarios.
+    async establecerTelegram(usuarioId: number, telegramId: number | null): Promise<Usuario> {
+        const client = this.supabaseService.getClient();
+        if (telegramId !== null) {
+            const otro = await this.buscarPorTelegramId(telegramId);
+            if (otro && otro.id !== usuarioId) {
+                throw new ConflictException(`Ese ID de Telegram ya está vinculado a ${otro.nombre || 'otro usuario'}.`);
+            }
+        }
+        const { error } = await client.from('usuarios').update({ telegram_id: telegramId }).eq('id', usuarioId);
+        if (error) {
+            if (error.code === '23505') throw new ConflictException('Ese ID de Telegram ya está vinculado a otro usuario.');
+            throw new Error(`Error guardando la cuenta de Telegram: ${error.message}`);
+        }
+        return (await this.obtenerPorId(usuarioId))!;
     }
 }
