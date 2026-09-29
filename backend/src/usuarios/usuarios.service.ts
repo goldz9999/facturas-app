@@ -1,9 +1,17 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { SupabaseService } from '../common/supabase.service';
 import { CrearUsuarioDto } from './dto/crear-usuario.dto';
 import { ActualizarUsuarioDto } from './dto/actualizar-usuario.dto';
 import { EmpresasService } from '../empresas/empresas.service';
+import {
+    EmpresaRol,
+    empresasDeFilas,
+    esRolEmpresa,
+    RolEmpresa,
+    rolEmpresaActualizado,
+    rolEmpresaDesdeLegacy,
+} from '../auth/roles-empresa';
 
 // Paso 33: empresa_id (una sola FK) se reemplazó por la tabla puente
 // usuario_empresas -- un usuario puede tener acceso a más de una empresa.
@@ -17,6 +25,9 @@ export interface Usuario {
     rol: string;
     activo: boolean;
     empresa_ids: number[];
+    // Rol por empresa (usuario_empresas.rol). Nunca incluye el hash de contraseña.
+    empresas: EmpresaRol[];
+    tiene_password: boolean;
     puede_registrar_personal: boolean;
     creado_en: string;
 }
@@ -29,10 +40,11 @@ interface FilaUsuario {
     activo: boolean;
     puede_registrar_personal: boolean;
     creado_en: string;
-    usuario_empresas?: Array<{ empresa_id: number }>;
+    password_hash?: string | null;
+    usuario_empresas?: Array<{ empresa_id: number; rol?: string | null }>;
 }
 
-const SELECT_CON_EMPRESAS = '*, usuario_empresas(empresa_id)';
+const SELECT_CON_EMPRESAS = '*, usuario_empresas(empresa_id, rol)';
 
 @Injectable()
 export class UsuariosService {
@@ -42,10 +54,14 @@ export class UsuariosService {
     ) { }
 
     private mapear(fila: FilaUsuario): Usuario {
-        const { usuario_empresas, ...resto } = fila;
+        // El hash de la contraseña nunca sale del servicio: se reemplaza por un booleano.
+        const { usuario_empresas, password_hash, ...resto } = fila;
+        const empresas = empresasDeFilas(usuario_empresas ?? null, resto.rol);
         return {
             ...resto,
-            empresa_ids: (usuario_empresas ?? []).map((e) => e.empresa_id),
+            empresa_ids: empresas.map((e) => e.empresa_id),
+            empresas,
+            tiene_password: !!password_hash,
         };
     }
 
@@ -111,7 +127,13 @@ export class UsuariosService {
     // - Si no viene ninguno ni forzado, se asigna a la empresa por defecto
     //   (hoy solo existe una) -- mismo comportamiento que antes de este
     //   paso.
-    async crear(dto: CrearUsuarioDto, forzarEmpresaIds?: number[]): Promise<Usuario> {
+    async crear(
+        dto: CrearUsuarioDto,
+        forzarEmpresaIds?: number[],
+        alta?: { rol: string; rol_empresa: RolEmpresa },
+    ): Promise<Usuario> {
+        const rolLegacyAlta = alta?.rol ?? dto.rol ?? 'empleado';
+        const rolEmpresaAlta = alta?.rol_empresa ?? rolEmpresaDesdeLegacy(rolLegacyAlta);
         let empresaIds = forzarEmpresaIds ?? dto.empresa_ids ?? [];
         if (empresaIds.length === 0) {
             const porDefecto = await this.empresasService.obtenerPorDefecto();
@@ -126,7 +148,7 @@ export class UsuariosService {
             .insert({
                 telegram_id: dto.telegram_id,
                 nombre: dto.nombre ?? null,
-                rol: dto.rol ?? 'empleado',
+                rol: rolLegacyAlta,
                 activo: dto.activo ?? true,
                 email: dto.email ?? null,
                 password_hash: passwordHash,
@@ -135,10 +157,13 @@ export class UsuariosService {
             .select('*')
             .single();
 
-        if (error) throw new Error(`Error creando usuario: ${error.message}`);
+        if (error) {
+            if (error.code === '23505') throw new ConflictException('Ese correo ya está registrado.');
+            throw new Error(`Error creando usuario: ${error.message}`);
+        }
 
         if (empresaIds.length > 0) {
-            await this.asignarEmpresas(data.id, empresaIds);
+            await this.asignarEmpresas(data.id, empresaIds, rolEmpresaAlta);
         }
 
         return (await this.obtenerPorId(data.id))!;
@@ -168,13 +193,18 @@ export class UsuariosService {
             if (error) throw new Error(`Error actualizando usuario: ${error.message}`);
         }
 
+        if (dto.rol !== undefined) {
+            await this.sincronizarRolEmpresas(id, dto.rol, empresaIdPermitido);
+        }
+
         // Reasignar empresas: solo quien puede ver todas (super_admin,
         // empresaIdPermitido === undefined) puede mandar la lista completa
         // de empresas de otro usuario. Un admin de empresa nunca debería
         // poder quitarle a alguien el acceso a una empresa que él ni
         // siquiera administra.
         if (dto.empresa_ids !== undefined && empresaIdPermitido === undefined) {
-            await this.asignarEmpresas(id, dto.empresa_ids);
+            const rolBase = dto.rol ?? (await this.rolGlobal(id));
+            await this.asignarEmpresas(id, dto.empresa_ids, rolEmpresaDesdeLegacy(rolBase));
         }
 
         const actualizado = await this.obtenerPorId(id);
@@ -185,15 +215,53 @@ export class UsuariosService {
     // Reemplaza por completo la lista de empresas del usuario (borra las
     // que ya no estén, inserta las nuevas). Usado por actualizar() y desde
     // TelegramService no hace falta -- ese flujo solo lee, nunca reasigna.
-    async asignarEmpresas(usuarioId: number, empresaIds: number[]): Promise<void> {
+    async asignarEmpresas(usuarioId: number, empresaIds: number[], rolPorDefecto: RolEmpresa = 'empleado'): Promise<void> {
         const client = this.supabaseService.getClient();
+
+        // Conserva el rol de las empresas que se mantienen; las nuevas reciben rolPorDefecto.
+        const { data: previas, error: errorLectura } = await client
+            .from('usuario_empresas')
+            .select('empresa_id, rol')
+            .eq('usuario_id', usuarioId);
+        if (errorLectura) throw new Error(`Error reasignando empresas: ${errorLectura.message}`);
+        const rolPrevio = new Map<number, RolEmpresa>(
+            (previas ?? []).filter((f: any) => esRolEmpresa(f.rol)).map((f: any) => [f.empresa_id, f.rol as RolEmpresa]),
+        );
+
         const { error: errorBorrado } = await client.from('usuario_empresas').delete().eq('usuario_id', usuarioId);
         if (errorBorrado) throw new Error(`Error reasignando empresas: ${errorBorrado.message}`);
 
         if (empresaIds.length === 0) return;
-        const filas = empresaIds.map((empresaId) => ({ usuario_id: usuarioId, empresa_id: empresaId }));
+        const filas = empresaIds.map((empresaId) => ({
+            usuario_id: usuarioId,
+            empresa_id: empresaId,
+            rol: rolPrevio.get(empresaId) ?? rolPorDefecto,
+        }));
         const { error: errorInsert } = await client.from('usuario_empresas').insert(filas);
         if (errorInsert) throw new Error(`Error reasignando empresas: ${errorInsert.message}`);
+    }
+
+    // Aplica un cambio de rol legacy (admin/empleado) a las filas de
+    // usuario_empresas sin pisar roles finos de la misma clase.
+    private async sincronizarRolEmpresas(usuarioId: number, rolLegacyNuevo: string, soloEmpresaId?: number): Promise<void> {
+        const client = this.supabaseService.getClient();
+        let query = client.from('usuario_empresas').select('id, rol').eq('usuario_id', usuarioId);
+        if (soloEmpresaId !== undefined) query = query.eq('empresa_id', soloEmpresaId);
+        const { data, error } = await query;
+        if (error) throw new Error(`Error leyendo roles por empresa: ${error.message}`);
+
+        for (const fila of (data ?? []) as { id: number; rol: string | null }[]) {
+            const nuevo = rolEmpresaActualizado(esRolEmpresa(fila.rol) ? fila.rol : 'empleado', rolLegacyNuevo);
+            if (nuevo === fila.rol) continue;
+            const { error: errorUpdate } = await client.from('usuario_empresas').update({ rol: nuevo }).eq('id', fila.id);
+            if (errorUpdate) throw new Error(`Error actualizando rol por empresa: ${errorUpdate.message}`);
+        }
+    }
+
+    private async rolGlobal(usuarioId: number): Promise<string> {
+        const { data, error } = await this.supabaseService.getClient().from('usuarios').select('rol').eq('id', usuarioId).maybeSingle();
+        if (error) throw new Error(`Error consultando el rol del usuario: ${error.message}`);
+        return data?.rol ?? 'empleado';
     }
 
     // Borrado real (distinto de desactivar). Los gastos que haya generado
