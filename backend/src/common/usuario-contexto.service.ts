@@ -1,12 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from './supabase.service';
+import { EmpresaRol, empresasDeFilas, esSuperAdmin } from '../auth/roles-empresa';
 
 export interface UsuarioContexto {
     id: number;
     email: string | null;
-    rol: string;
+    rol: string; // columna legacy usuarios.rol
     activo: boolean;
+    es_super_admin: boolean;
     empresa_ids: number[];
+    empresas: EmpresaRol[];
     puede_registrar_personal: boolean;
     ultima_empresa_id: number | null;
 }
@@ -29,21 +32,24 @@ export class UsuarioContextoService {
         const { data, error } = await this.supabaseService
             .getClient()
             .from('usuarios')
-            .select('id, email, rol, activo, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id)')
+            .select('id, email, rol, activo, es_super_admin, puede_registrar_personal, ultima_empresa_id, usuario_empresas(empresa_id, rol)')
             .eq('id', usuarioId)
             .maybeSingle();
 
         if (error) throw new Error(`Error consultando usuario: ${error.message}`);
         if (!data) return null;
 
+        const empresas = empresasDeFilas(data.usuario_empresas as any, data.rol);
         return {
             id: data.id,
             email: data.email,
             rol: data.rol,
             activo: data.activo,
+            es_super_admin: esSuperAdmin(data),
             puede_registrar_personal: data.puede_registrar_personal,
             ultima_empresa_id: data.ultima_empresa_id ?? null,
-            empresa_ids: (data.usuario_empresas ?? []).map((e: { empresa_id: number }) => e.empresa_id),
+            empresa_ids: empresas.map((e) => e.empresa_id),
+            empresas,
         };
     }
 }
