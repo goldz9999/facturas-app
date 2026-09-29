@@ -1,21 +1,27 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { UsuariosService } from './usuarios.service';
 
 interface Opciones {
     insertUsuario?: { data?: unknown; error?: { code?: string; message: string } | null };
-    previas?: { empresa_id: number; rol: string | null }[];
+    previas?: { id?: number; empresa_id?: number; rol: string | null }[];
     fila?: Record<string, unknown> | null;
     filas?: Record<string, unknown>[];
+    pertenece?: boolean;
 }
 
 function montar(opts: Opciones = {}) {
     const insertados: { usuarios: any[]; usuario_empresas: any[] } = { usuarios: [], usuario_empresas: [] };
+    const updates: { usuarios: any[]; usuario_empresas: any[] } = { usuarios: [], usuario_empresas: [] };
     const from = jest.fn((tabla: string) => {
         if (tabla === 'usuarios') {
             return {
                 insert: (v: any) => {
                     insertados.usuarios.push(v);
                     return { select: () => ({ single: async () => opts.insertUsuario ?? { data: { id: 5 }, error: null } }) };
+                },
+                update: (v: any) => {
+                    updates.usuarios.push(v);
+                    return { eq: async () => ({ error: null }) };
                 },
                 select: () => ({
                     eq: () => ({ maybeSingle: async () => ({ data: opts.fila ?? null, error: null }) }),
@@ -24,8 +30,20 @@ function montar(opts: Opciones = {}) {
             };
         }
         return {
-            select: () => ({ eq: async () => ({ data: opts.previas ?? [], error: null }) }),
+            // select(...).eq(...)[.eq(...)] se puede esperar directamente o terminar en maybeSingle().
+            select: () => {
+                const r: any = {
+                    eq: () => r,
+                    maybeSingle: async () => ({ data: opts.pertenece === false ? null : { usuario_id: 1 }, error: null }),
+                    then: (ok: any, ko: any) => Promise.resolve({ data: opts.previas ?? [], error: null }).then(ok, ko),
+                };
+                return r;
+            },
             delete: () => ({ eq: async () => ({ error: null }) }),
+            update: (v: any) => {
+                updates.usuario_empresas.push(v);
+                return { eq: async () => ({ error: null }) };
+            },
             insert: async (v: any) => {
                 insertados.usuario_empresas.push(v);
                 return { error: null };
@@ -33,7 +51,7 @@ function montar(opts: Opciones = {}) {
         };
     });
     const svc = new UsuariosService({ getClient: () => ({ from }) } as any, {} as any);
-    return { svc, insertados };
+    return { svc, insertados, updates };
 }
 
 const filaBase = {
@@ -89,5 +107,28 @@ describe('UsuariosService.crear', () => {
         await expect(
             svc.crear({ nombre: 'Ana', email: 'ana@x.pe', password: 'clave123' } as any, [1], { rol: 'empleado', rol_empresa: 'empleado' }),
         ).rejects.toThrow(new ConflictException('Ese correo ya está registrado.'));
+    });
+});
+
+describe('UsuariosService.actualizar por un administrador de empresa', () => {
+    it('no toca el rol global (usuarios.rol); solo el rol en esa empresa', async () => {
+        const { svc, updates } = montar({ fila: filaBase, previas: [{ id: 77, rol: 'empleado' }] });
+        await svc.actualizar(9, { rol: 'admin', password: 'nuevaclave' } as any, 3);
+        expect(updates.usuarios[0]).toHaveProperty('password_hash');
+        expect(updates.usuarios[0]).not.toHaveProperty('rol');
+        expect(updates.usuario_empresas).toEqual([{ rol: 'administrador' }]);
+    });
+
+    it('un super admin (sin empresa acotada) sí actualiza el rol global', async () => {
+        const { svc, updates } = montar({ fila: filaBase, previas: [] });
+        await svc.actualizar(9, { rol: 'admin' } as any);
+        expect(updates.usuarios[0]).toMatchObject({ rol: 'admin' });
+    });
+});
+
+describe('UsuariosService.desactivar', () => {
+    it('acotado a una empresa exige que el usuario pertenezca a ella', async () => {
+        const { svc } = montar({ pertenece: false, fila: filaBase });
+        await expect(svc.desactivar(9, 3)).rejects.toThrow(NotFoundException);
     });
 });

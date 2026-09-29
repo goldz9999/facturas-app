@@ -40,7 +40,8 @@ export class EmpresasController {
     @Get(':id')
     @Roles('super_admin', 'admin')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Request() req) {
-        if (req.user.rol === 'admin' && !(req.user.empresa_ids ?? []).includes(id)) {
+        // Solo la empresa activa: el rol de admin se derivó de ELLA, no de las demás.
+        if (req.user.rol === 'admin' && req.user.empresa_activa_id !== id) {
             throw new ForbiddenException('No tienes acceso a esa empresa.');
         }
         return this.empresasService.obtenerPorId(id);

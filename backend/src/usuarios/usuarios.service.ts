@@ -28,6 +28,7 @@ export interface Usuario {
     // Rol por empresa (usuario_empresas.rol). Nunca incluye el hash de contraseña.
     empresas: EmpresaRol[];
     tiene_password: boolean;
+    es_super_admin?: boolean;
     puede_registrar_personal: boolean;
     creado_en: string;
 }
@@ -180,7 +181,9 @@ export class UsuariosService {
         const cambios: Record<string, unknown> = {};
         if (dto.nombre !== undefined) cambios.nombre = dto.nombre;
         if (dto.email !== undefined) cambios.email = dto.email;
-        if (dto.rol !== undefined) cambios.rol = dto.rol;
+        // Un administrador de empresa (empresaIdPermitido) solo cambia el rol EN su empresa
+        // (usuario_empresas.rol); el rol global de la cuenta lo decide un super_admin.
+        if (dto.rol !== undefined && empresaIdPermitido === undefined) cambios.rol = dto.rol;
         if (dto.activo !== undefined) cambios.activo = dto.activo;
         if (dto.password) cambios.password_hash = await bcrypt.hash(dto.password, 10);
         if (dto.telegram_id !== undefined) cambios.telegram_id = dto.telegram_id;
@@ -296,7 +299,10 @@ export class UsuariosService {
         if (!data) throw new NotFoundException(`Usuario ${id} no encontrado en tu empresa`);
     }
 
-    async desactivar(id: number): Promise<Usuario> {
+    async desactivar(id: number, empresaIdPermitido?: number): Promise<Usuario> {
+        if (empresaIdPermitido !== undefined) {
+            await this.verificarPerteneceAEmpresa(id, empresaIdPermitido);
+        }
         const { error } = await this.supabaseService
             .getClient()
             .from('usuarios')

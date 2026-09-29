@@ -13,10 +13,21 @@ alter table public.usuario_empresas
 -- Migrar lo existente.
 update public.usuarios set es_super_admin = true where rol = 'super_admin';
 
+-- Filas duplicadas (mismo usuario y empresa) impedirían el unique de más abajo:
+-- se conserva la más antigua.
+delete from public.usuario_empresas a
+using public.usuario_empresas b
+where a.usuario_id = b.usuario_id
+  and a.empresa_id = b.empresa_id
+  and a.id > b.id;
+
+-- Solo 'admin' y 'super_admin' pasan a administrador; cualquier otro valor
+-- (incluido uno inesperado o vacío) cae al rol más bajo, nunca a uno más alto.
 update public.usuario_empresas ue
 set rol = case u.rol
-  when 'empleado' then 'empleado'
-  else 'administrador'  -- admin y super_admin
+  when 'admin' then 'administrador'
+  when 'super_admin' then 'administrador'
+  else 'empleado'
 end
 from public.usuarios u
 where u.id = ue.usuario_id;

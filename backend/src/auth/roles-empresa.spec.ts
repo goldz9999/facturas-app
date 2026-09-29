@@ -8,6 +8,7 @@ import {
     rolEmpresaActualizado,
     rolEmpresaDesdeLegacy,
     rolLegacy,
+    validarGestion,
 } from './roles-empresa';
 
 const empresas: EmpresaRol[] = [
@@ -120,5 +121,29 @@ describe('resolverRolAlta', () => {
     it('solo un super admin puede crear super admins', () => {
         expect(() => resolverRolAlta({ rol: 'super_admin' }, dueno)).toThrow('super_admin');
         expect(resolverRolAlta({ rol: 'super_admin' }, superAdmin)).toEqual({ rol_empresa: 'administrador', rol: 'super_admin' });
+    });
+});
+
+describe('validarGestion', () => {
+    const admin = { es_super_admin: false, rol_empresa: 'administrador' as const };
+    const dueno = { es_super_admin: false, rol_empresa: 'propietario' as const };
+    const superAdmin = { es_super_admin: true, rol_empresa: 'propietario' as const };
+    const objetivo = (rol: any, sup = false) => ({ es_super_admin: sup, rol_empresa: rol });
+
+    it('un administrador puede gestionar a administradores, contadores y empleados', () => {
+        expect(() => validarGestion(admin, objetivo('administrador'))).not.toThrow();
+        expect(() => validarGestion(admin, objetivo('contador'))).not.toThrow();
+        expect(() => validarGestion(admin, objetivo('empleado'))).not.toThrow();
+    });
+    it('un administrador no puede gestionar a un propietario ni a un super admin', () => {
+        expect(() => validarGestion(admin, objetivo('propietario'))).toThrow('propietario');
+        expect(() => validarGestion(admin, objetivo('empleado', true))).toThrow('super_admin');
+    });
+    it('un propietario gestiona a otro propietario pero no a un super admin', () => {
+        expect(() => validarGestion(dueno, objetivo('propietario'))).not.toThrow();
+        expect(() => validarGestion(dueno, objetivo('empleado', true))).toThrow('super_admin');
+    });
+    it('un super admin gestiona a cualquiera', () => {
+        expect(() => validarGestion(superAdmin, objetivo('propietario', true))).not.toThrow();
     });
 });

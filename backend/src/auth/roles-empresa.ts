@@ -85,3 +85,19 @@ export function resolverRolAlta(
     }
     return { rol_empresa: rolEmpresa, rol: dto.rol === 'super_admin' ? 'super_admin' : rolLegacy(false, rolEmpresa) };
 }
+
+// Quien modifica/desactiva/elimina a otro usuario dentro de una empresa no puede
+// tocar a alguien con más privilegio: un administrador no gestiona propietarios
+// ni super admins (cambiar su correo/contraseña equivaldría a tomar su cuenta).
+export function validarGestion(
+    quien: { es_super_admin: boolean; rol_empresa: RolEmpresa | null },
+    objetivo: { es_super_admin: boolean; rol_empresa: RolEmpresa | null },
+): void {
+    if (quien.es_super_admin) return;
+    if (objetivo.es_super_admin) {
+        throw new ForbiddenException('No puedes modificar a un super_admin');
+    }
+    if (objetivo.rol_empresa === 'propietario' && quien.rol_empresa !== 'propietario') {
+        throw new ForbiddenException('Solo un propietario puede modificar a otro propietario');
+    }
+}
