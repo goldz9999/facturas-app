@@ -53,3 +53,48 @@ describe('buscarPosibleDuplicadoEntreUsuarios', () => {
         expect(await servicio([{ ...original, posible_duplicado_de: 9 }]).buscarPosibleDuplicadoEntreUsuarios(2, 368.5, '2026-07-20', '000014', null, '20607668524', null, 1, 3)).toBeNull();
     });
 });
+
+// Cadena de Supabase que devuelve `filas` tal cual (los filtros no importan aquí).
+function servicioFijo(filas: any[]) {
+    const q: any = {};
+    for (const m of ['select', 'not', 'eq', 'neq', 'order', 'limit']) q[m] = () => q;
+    q.then = (ok: any) => ok({ data: filas, error: null });
+    return new GastosService({ getClient: () => ({ from: () => q }) } as any, {} as any, {} as any, {} as any, {} as any);
+}
+
+describe('buscarDuplicadoPorImagen', () => {
+    const h = 'a'.repeat(64);
+    const casiH = 'a'.repeat(63) + 'b'; // 1 bit distinto
+    const ev = (over: any = {}) => ({
+        huella: casiH, gasto_id: 1,
+        gastos: { id: 1, empresa_id: 1, monto: 368.5, posible_duplicado_de: null, pendiente_revision: false, usuario_nombre: 'Adrian', comprobantes: [{ numero: '000014' }], pagos: [], ...over },
+    });
+
+    it('la misma imagen con el mismo monto es duplicado', async () => {
+        const r = await servicioFijo([ev()]).buscarDuplicadoPorImagen([h], 368.5, 1, 4, '000014', null);
+        expect(r?.gasto.id).toBe(1);
+        expect(r?.usuario_nombre).toBe('Adrian');
+    });
+
+    it('capturas parecidas de pagos distintos no: otro monto u otra operación', async () => {
+        expect(await servicioFijo([ev()]).buscarDuplicadoPorImagen([h], 50, 1, 4, null, null)).toBeNull();
+        const yape = ev({ comprobantes: [], pagos: [{ numero_operacion: '111' }] });
+        expect(await servicioFijo([yape]).buscarDuplicadoPorImagen([h], 368.5, 1, 4, null, '222')).toBeNull();
+        expect(await servicioFijo([ev()]).buscarDuplicadoPorImagen([h], 368.5, 1, 4, '000099', null)).toBeNull();
+    });
+
+    it('imagen distinta no coincide', async () => {
+        expect(await servicioFijo([ev({}), { ...ev(), huella: 'f'.repeat(64) }].slice(1)).buscarDuplicadoPorImagen([h], 368.5, 1, 4, null, null)).toBeNull();
+    });
+});
+
+describe('buscarPosibleDuplicadoDelMismoUsuario', () => {
+    const previo = { id: 1, comprobantes: [{ numero: '000010' }], proveedores: { ruc: '20607668524' }, pagos: [] };
+    it('el RUC solo no es duplicado (otra compra al mismo proveedor)', async () => {
+        expect(await servicioFijo([previo]).buscarPosibleDuplicadoDelMismoUsuario(1, 5, '000011', '20607668524', null)).toBeNull();
+    });
+    it('mismo número y mismo RUC sí; mismo número de otro emisor no', async () => {
+        expect((await servicioFijo([previo]).buscarPosibleDuplicadoDelMismoUsuario(1, 5, '000010', '20607668524', null))?.gasto.id).toBe(1);
+        expect(await servicioFijo([previo]).buscarPosibleDuplicadoDelMismoUsuario(1, 5, '000010', '20999999999', null)).toBeNull();
+    });
+});

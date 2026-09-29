@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../common/supabase.service';
+import { huellaImagen } from './imagen.util';
 
 const BUCKET = 'Facturas';
 
@@ -21,10 +22,42 @@ interface ArchivoBucket {
 // del límite. El gasto y el comprobante quedan intactos siempre; solo se
 // pierde el archivo de respaldo (storage_path pasa a null).
 @Injectable()
-export class FacturasCleanupService {
+export class FacturasCleanupService implements OnApplicationBootstrap {
     private readonly logger = new Logger(FacturasCleanupService.name);
 
     constructor(private supabase: SupabaseService) { }
+
+    // Las imágenes subidas antes de existir la huella no la tienen: se calcula
+    // al arrancar (sin bloquear el arranque) y cada hora, por tandas.
+    onApplicationBootstrap() {
+        setTimeout(() => this.completarHuellas().catch((e) => this.logger.warn(`Huellas: ${e.message}`)), 5000);
+    }
+
+    @Cron(CronExpression.EVERY_HOUR)
+    async completarHuellas(tanda = 100): Promise<number> {
+        const client = this.supabase.getClient();
+        const { data, error } = await client
+            .from('evidencias')
+            .select('id, storage_path')
+            .is('huella', null)
+            .eq('tipo', 'imagen')
+            .not('storage_path', 'is', null)
+            .order('id', { ascending: false })
+            .limit(tanda);
+        if (error) throw new Error(error.message);
+        let hechas = 0;
+        for (const ev of data ?? []) {
+            const { data: archivo, error: errDescarga } = await client.storage.from(BUCKET).download(ev.storage_path);
+            if (errDescarga || !archivo) continue;
+            const buffer = Buffer.from(await archivo.arrayBuffer());
+            const huella = await huellaImagen(buffer, archivo.type || 'image/webp');
+            if (!huella) continue;
+            const { error: errUpdate } = await client.from('evidencias').update({ huella }).eq('id', ev.id);
+            if (!errUpdate) hechas++;
+        }
+        if (hechas) this.logger.log(`Huella calculada para ${hechas} imagen(es) existentes.`);
+        return hechas;
+    }
 
     // Corre todos los días a las 3:00 AM (hora del servidor)
     @Cron(CronExpression.EVERY_DAY_AT_3AM)

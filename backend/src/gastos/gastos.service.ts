@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { ProveedoresService } from '../proveedores/proveedores.service';
-import { convertirImagenAWebp } from '../facturas/imagen.util';
+import { convertirImagenAWebp, distanciaHuella, huellaImagen, UMBRAL_HUELLA } from '../facturas/imagen.util';
 import { GastosGateway } from './gastos.gateway';
 import { PedidosService } from '../pedidos/pedidos.service';
 import { UsuarioContextoService } from '../common/usuario-contexto.service';
@@ -74,6 +74,7 @@ export interface DatosEvidencia {
     tipo: string; // 'imagen' | 'pdf' | 'audio' | etc.
     storage_path: string;
     origen?: string; // 'telegram' | 'web', default 'telegram'
+    huella?: string | null; // huella perceptual de la imagen (ver huellaImagen)
 }
 
 // Datos de pago (sección 7/8 de requerimientos): entidad separada del
@@ -312,6 +313,7 @@ export class GastosService {
             tipo: ext === 'pdf' ? 'pdf' : 'imagen',
             storage_path: nombreArchivoFinal,
             origen: 'web',
+            huella: await huellaImagen(file.buffer, mimeType),
         });
     }
 
@@ -524,6 +526,16 @@ export class GastosService {
     // confianza a 'alta', ya que quedó validado por una persona. Si el
     // gasto tiene comprobante, también actualiza su total para que no
     // quede desalineado.
+    // La fecha del gasto es la del comprobante de compra. Si el gasto se creó
+    // con una captura de pago (Yape/transferencia) y la factura llegó después,
+    // se corrige a la fecha de la factura.
+    async actualizarFecha(gastoId: number, fecha: string) {
+        const { error } = await this.supabase.getClient().from('gastos').update({ fecha }).eq('id', gastoId);
+        if (error) {
+            throw new InternalServerErrorException(`Error actualizando la fecha: ${error.message}`);
+        }
+    }
+
     async corregirMonto(gastoId: number, monto: number) {
         const client = this.supabase.getClient();
 
@@ -566,6 +578,53 @@ export class GastosService {
     // - débil: misma fecha y mismo monto (±0.50).
     // Se prefiere un candidato fuerte. Los duplicados ya confirmados no cuentan
     // como original.
+    // Duplicado por imagen: la misma foto o captura (misma huella perceptual)
+    // ya está en otro gasto de la empresa, de cualquier usuario. Para no
+    // confundir capturas parecidas (dos Yape de pagos distintos se ven casi
+    // igual) se exige además el mismo monto, y se descarta si ambos traen un
+    // número de operación o de comprobante y son distintos.
+    async buscarDuplicadoPorImagen(
+        huellas: string[],
+        monto: number,
+        empresaId: number | null | undefined,
+        gastoIdActual: number,
+        numeroComprobante?: string | null,
+        numeroOperacion?: string | null,
+    ) {
+        if (!huellas.length || empresaId == null) return null;
+        const { data, error } = await this.supabase
+            .getClient()
+            .from('evidencias')
+            .select('huella, gasto_id, gastos!inner(id, empresa_id, monto, posible_duplicado_de, pendiente_revision, usuario_nombre, comprobantes(numero), pagos(numero_operacion))')
+            .not('huella', 'is', null)
+            .eq('gastos.empresa_id', empresaId)
+            .neq('gasto_id', gastoIdActual)
+            .order('creado_en', { ascending: false })
+            .limit(500);
+        if (error) {
+            throw new InternalServerErrorException(`Error buscando duplicados por imagen: ${error.message}`);
+        }
+        for (const ev of (data ?? []) as any[]) {
+            const g = ev.gastos;
+            if (!g || (g.posible_duplicado_de != null && !g.pendiente_revision)) continue;
+            if (!huellas.some((h) => distanciaHuella(h, ev.huella) <= UMBRAL_HUELLA)) continue;
+            if (Math.abs(Number(g.monto) - monto) > 0.5) continue;
+            const operaciones = (g.pagos ?? []).map((p: any) => p.numero_operacion).filter(Boolean);
+            if (numeroOperacion && operaciones.length && !operaciones.includes(numeroOperacion)) continue;
+            const numeros = (g.comprobantes ?? []).map((c: any) => c.numero).filter(Boolean);
+            if (numeroComprobante && numeros.length && !numeros.includes(numeroComprobante)) continue;
+            return { gasto: g, usuario_nombre: g.usuario_nombre ?? 'otro usuario', nivel: 'alta' as const };
+        }
+        return null;
+    }
+
+    // Huellas de las imágenes de un gasto (para buscar duplicados al agrupar).
+    async huellasDeGasto(gastoId: number): Promise<string[]> {
+        const { data, error } = await this.supabase.getClient().from('evidencias').select('huella').eq('gasto_id', gastoId).not('huella', 'is', null);
+        if (error) throw new InternalServerErrorException(`Error leyendo huellas: ${error.message}`);
+        return (data ?? []).map((e: any) => e.huella);
+    }
+
     async buscarPosibleDuplicadoEntreUsuarios(
         usuarioId: number,
         monto: number,
@@ -669,7 +728,11 @@ export class GastosService {
                 !!numeroOperacion &&
                 Array.isArray(g.pagos) &&
                 g.pagos.some((p: any) => p.numero_operacion && p.numero_operacion === numeroOperacion);
-            return coincideNumero || coincideRuc || coincideOperacion;
+            // El RUC solo no basta: es del proveedor, se repite en cada compra.
+            // Sirve para confirmar que el mismo número es del mismo emisor.
+            const rucCandidato = g.proveedores?.ruc ?? null;
+            const mismoEmisor = !ruc || !rucCandidato || coincideRuc;
+            return (coincideNumero && mismoEmisor) || coincideOperacion;
         });
 
         if (!candidato) return null;
@@ -1484,6 +1547,7 @@ export class GastosService {
                 tipo: datos.tipo,
                 storage_path: datos.storage_path,
                 origen: datos.origen ?? 'telegram',
+                huella: datos.huella ?? null,
             })
             .select('*')
             .single();

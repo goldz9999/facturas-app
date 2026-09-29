@@ -5,7 +5,7 @@ import { GeminiService } from '../ia/gemini.service';
 import type { FacturaExtraida } from '../ia/gemini.service';
 import { normalizarFactura } from './facturas-normalizer';
 import { GastosService } from '../gastos/gastos.service';
-import { convertirImagenAWebp } from './imagen.util';
+import { convertirImagenAWebp, huellaImagen } from './imagen.util';
 import { ProveedoresService } from '../proveedores/proveedores.service';
 
 const BUCKET = 'Facturas';
@@ -105,6 +105,8 @@ export class FacturasService {
     // máximo. Ahora ambas corren en paralelo con Promise.all.
     let nombreArchivoFinal = nombreArchivo;
     let subidaStorage: Promise<void> = Promise.resolve();
+    // Huella de la imagen original para detectar la misma foto enviada otra vez.
+    const huella = esAudio ? null : await huellaImagen(file.buffer, mimeType);
     if (!esAudio) {
       const convertida = await convertirImagenAWebp(file.buffer, mimeType);
       const bufferASubir = convertida?.buffer ?? file.buffer;
@@ -153,7 +155,7 @@ export class FacturasService {
           usuarioId,
           origen,
           false,
-          { ext, nombreArchivoFinal },
+          { ext, nombreArchivoFinal, huella },
         );
         await subidaStorage; // recién acá hace falta que el upload haya terminado (para archivoInfo)
         return resultadoFinal;
@@ -191,7 +193,7 @@ export class FacturasService {
     usuarioId: number,
     origen: 'web' | 'telegram',
     esAudio: boolean,
-    archivoInfo: { ext: string; nombreArchivoFinal: string } | null,
+    archivoInfo: { ext: string; nombreArchivoFinal: string; huella?: string | null } | null,
     esTextoLibre = false,
   ) {
     // 3. Extraer datos estructurados con Gemini (prompt distinto si es audio)
@@ -208,7 +210,7 @@ export class FacturasService {
     usuarioId: number,
     origen: 'web' | 'telegram',
     esAudio: boolean,
-    archivoInfo: { ext: string; nombreArchivoFinal: string } | null,
+    archivoInfo: { ext: string; nombreArchivoFinal: string; huella?: string | null } | null,
     esTextoLibre = false,
   ) {
     // 4. Normalizar (fecha, items) igual que "Separar articulos1"
@@ -250,6 +252,7 @@ export class FacturasService {
       tipo: ext === 'pdf' ? 'pdf' : ('imagen' as const),
       storage_path: nombreArchivoFinal,
       origen,
+      huella: archivoInfo?.huella ?? null,
     };
 
     // 5a. Pago (sección 7/8): solo se registra cuando Gemini identificó un
@@ -368,6 +371,13 @@ export class FacturasService {
         );
         gastoId = candidato.id;
 
+        // El gasto se había creado con otro archivo (p. ej. la captura del Yape,
+        // con la fecha del pago). La fecha que vale es la de la factura.
+        if (pareceFactura && factura.fecha && factura.fecha !== candidato.fecha) {
+          await this.gastosService.actualizarFecha(candidato.id, factura.fecha);
+          candidato.fecha = factura.fecha;
+        }
+
         // Fix Paso 18.2: si el candidato no tenía categoría y el bloque de
         // arriba sí pudo resolverla (proveedor ya conocido), se aplica acá
         // mismo -- el gasto ya existe, no pasa por gastosService.crear().
@@ -390,7 +400,15 @@ export class FacturasService {
           const numero = pareceFactura ? datosComprobante.numero : null;
           const rucFactura = pareceFactura ? factura.ruc || null : null;
           const operacion = datosPago?.numero_operacion || null;
-          const propio = await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(usuarioId, candidato.id, numero, rucFactura, operacion);
+          const porImagen = await this.gastosService.buscarDuplicadoPorImagen(
+            await this.gastosService.huellasDeGasto(candidato.id),
+            Number(candidato.monto) || montoDetectado,
+            candidato.empresa_id,
+            candidato.id,
+            numero,
+            operacion,
+          );
+          const propio = porImagen ?? (await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(usuarioId, candidato.id, numero, rucFactura, operacion));
           const duplicado = propio ?? (await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
             usuarioId,
             Number(candidato.monto) || montoDetectado,
@@ -446,7 +464,16 @@ export class FacturasService {
         // ejemplo, Yape/foto), no para audio, que no tiene monto confiable
         // para comparar.
         if (!esAudio && montoDetectado > 0) {
-          const duplicadoPropio = await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(
+          // Primero la señal más fuerte: la misma imagen ya está en otro gasto.
+          const porImagen = await this.gastosService.buscarDuplicadoPorImagen(
+            archivoInfo?.huella ? [archivoInfo.huella] : [],
+            montoDetectado,
+            gasto.empresa_id,
+            gastoId,
+            datosComprobante.numero,
+            datosPago?.numero_operacion || null,
+          );
+          const duplicadoPropio = porImagen ?? await this.gastosService.buscarPosibleDuplicadoDelMismoUsuario(
             usuarioId,
             gastoId,
             datosComprobante.numero,
@@ -586,6 +613,7 @@ export class FacturasService {
         tipo: ext === 'pdf' ? 'pdf' : 'imagen',
         storage_path: nombreArchivoFinal,
         origen: 'telegram',
+        huella: await huellaImagen(file.buffer, mimeType),
       },
       factura.medio_pago
         ? {
