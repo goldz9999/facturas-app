@@ -1,7 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 
-export type EstadoEsperando = 'subir_comprobante' | 'confirmar_monto';
+export type EstadoEsperando = 'subir_comprobante' | 'confirmar_monto' | 'tipo_cambio';
 
 export interface TelegramEstado {
     id: number;

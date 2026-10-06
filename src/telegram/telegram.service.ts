@@ -85,6 +85,10 @@ export class TelegramService {
             // como la respuesta a esa pregunta, no como un comando ni un
             // archivo nuevo.
             const estadoPrevio = await this.telegramEstado.obtener(Number(chatId));
+            if (estadoPrevio?.esperando === 'tipo_cambio' && estadoPrevio.gasto_id && message.text) {
+                await this.manejarTipoCambio(chatId, estadoPrevio.gasto_id, message.text);
+                return;
+            }
             if (estadoPrevio?.esperando === 'confirmar_monto' && estadoPrevio.gasto_id && message.text) {
                 await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text);
                 return;
@@ -125,7 +129,7 @@ export class TelegramService {
             // pregunta quedó abandonada: se limpia el estado para que no
             // quede "escuchando" de fondo y confunda una respuesta de texto
             // posterior con la corrección de un gasto viejo.
-            if (estadoPrevio?.esperando === 'confirmar_monto') {
+            if (estadoPrevio?.esperando === 'confirmar_monto' || estadoPrevio?.esperando === 'tipo_cambio') {
                 await this.telegramEstado.limpiar(Number(chatId));
             }
 
@@ -233,6 +237,15 @@ export class TelegramService {
             // antes de dar el gasto por bueno — nunca se borra automático.
             if (resultado.posible_duplicado) {
                 await this.avisarPosibleDuplicado(chatId, resultado.gasto_id, resultado.posible_duplicado);
+            }
+
+            // Si el gasto quedó en dólares y no estamos esperando que el
+            // usuario corrija el monto (confianza baja), guardamos el estado
+            // 'tipo_cambio' para que su próxima respuesta de texto sea
+            // interpretada como el tipo de cambio y el monto se convierta a
+            // soles automáticamente.
+            if (resultado.moneda === 'USD' && !pidioConfianza) {
+                await this.telegramEstado.guardar(Number(chatId), 'tipo_cambio', resultado.gasto_id);
             }
         } catch (err) {
             this.logger.error(`Error procesando update de Telegram (chat ${chatId}): ${err.message}`, err.stack);
@@ -664,6 +677,30 @@ export class TelegramService {
         await this.preguntarComprobanteSiFalta(chatId, gastoId);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
+    }
+
+    private async manejarTipoCambio(chatId: number | string, gastoId: number, texto: string) {
+        const normalizado = texto.trim().replace(',', '.').replace(/[^\d.]/g, '');
+        const tasa = normalizado ? parseFloat(normalizado) : NaN;
+
+        if (!normalizado || isNaN(tasa) || tasa < 1 || tasa > 20) {
+            await this.enviarMensaje(
+                chatId,
+                '❌ Tipo de cambio no válido. Respóndeme solo el número, ej: 3.80',
+            );
+            return;
+        }
+
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        const montoUSD = Number(gasto.monto);
+        const montoPEN = Math.round(montoUSD * tasa * 100) / 100;
+
+        await this.gastosService.corregirMonto(gastoId, montoPEN);
+        await this.telegramEstado.limpiar(Number(chatId));
+        await this.enviarMensaje(
+            chatId,
+            `✅ Convertido: $${montoUSD.toFixed(2)} × ${tasa} = S/ ${montoPEN.toFixed(2)}`,
+        );
     }
 
     // --- Flujo 2: comando /gastos -> lista con botón "Agregar comprobante" ---
@@ -1110,7 +1147,7 @@ export class TelegramService {
         if (resultado.total != null) msg += `\n💰 <b>Total:</b> ${fmt(resultado.total)}`;
 
         if (moneda === 'USD') {
-            msg += `\n\n⚠️ <i>El gasto está en dólares. Para convertirlo a soles, responde con el tipo de cambio (ej: 3.80).</i>`;
+            msg += `\n\n⚠️ <i>El gasto está en dólares ($). Responde con el tipo de cambio para convertirlo a soles (ej: 3.80).</i>`;
         }
 
         return msg;
