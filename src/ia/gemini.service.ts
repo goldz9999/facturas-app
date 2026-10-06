@@ -378,7 +378,38 @@ Si el documento corresponde a Yape:
 Nunca uses "alta" simplemente porque el documento parece legible.
 
 ==================================================
-16. REGLA ESPECIAL CONTRA INVENCIONES
+16. MONEDA
+==================================================
+
+"Moneda" indica la moneda del comprobante.
+
+* Si el comprobante muestra S/, PEN, soles o similar → "PEN"
+* Si muestra $, USD, dólares o similar → "USD"
+* Si no puede determinarse: "PEN" (asume soles por defecto)
+
+==================================================
+17. ES DOCUMENTO VÁLIDO
+==================================================
+
+"EsDocumentoValido" es true SOLO cuando el texto/imagen corresponde a:
+
+* Una factura o boleta emitida (ya pagada o al momento del pago)
+* Un comprobante de pago (Yape, transferencia, POS)
+* Un ticket de caja o recibo de pago completado
+
+Es false cuando el texto/imagen es:
+
+* Una captura de pantalla de una web o app (que no sea el recibo final del pago)
+* Una cotización, proforma o presupuesto
+* Un estado de cuenta o resumen de movimientos
+* Una notificación de cobro pendiente (factura pendiente de pago)
+* Un correo electrónico, chat o conversación
+* Cualquier otro documento que NO sea evidencia de un pago ya realizado o una compra concretada
+
+Si no puede determinarse con certeza: true (dar el beneficio de la duda).
+
+==================================================
+18. REGLA ESPECIAL CONTRA INVENCIONES
 ==================================================
 
 Antes de devolver el JSON, verifica mentalmente cada campo:
@@ -393,7 +424,7 @@ Si la respuesta es NO:
 No inventes valores para completar el esquema.
 
 ==================================================
-17. FORMATO DE RESPUESTA
+19. FORMATO DE RESPUESTA
 ==================================================
 
 Devuelve ÚNICAMENTE JSON válido, siempre en español.
@@ -426,6 +457,8 @@ El JSON debe cumplir exactamente esta estructura:
 "Total": "number|null",
 "MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
 "NumeroOperacion": "string",
+"Moneda": "PEN|USD",
+"EsDocumentoValido": true,
 "Confianza": "alta|media|baja"
 }`;
 
@@ -734,6 +767,7 @@ Estructura:
 "MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
 "NumeroOperacion": "string",
 "PedidoMencionado": "string",
+"Moneda": "PEN|USD",
 "Confianza": "alta|media|baja"
 }`;
 
@@ -758,6 +792,8 @@ export interface FacturaExtraida {
     // libre: el backend lo resuelve contra `pedidos` de la empresa y nunca
     // lo acepta como id (ver PedidosService.buscarPorNombre).
     PedidoMencionado?: string;
+    Moneda?: string;
+    EsDocumentoValido?: boolean;
     Confianza?: string;
 }
 

@@ -59,6 +59,8 @@ export interface FacturaNormalizada {
     medio_pago: MedioPago | null;
     numero_operacion: string;
     confianza: NivelConfianza;
+    moneda: 'PEN' | 'USD';
+    es_documento_valido: boolean;
     // RF-11: nombre de pedido que la persona mencionó en un audio/texto
     // libre ("para el pedido Dragon"). Cadena vacía si no mencionó ninguno.
     // NO es un id: el backend lo resuelve contra `pedidos` de la empresa.
@@ -103,6 +105,12 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
     // bandeja de Revisión en vez de guardarse con una fecha inventada.
     const confianza = fechaValida ? normalizarConfianza(data.Confianza) : 'baja';
 
+    const monedaRaw = String(data.Moneda ?? '').trim().toUpperCase();
+    const moneda: 'PEN' | 'USD' = monedaRaw === 'USD' ? 'USD' : 'PEN';
+    // EsDocumentoValido: default true (dar beneficio de la duda para audios
+    // y texto libre donde este campo no se envía, y para retrocompatibilidad).
+    const es_documento_valido = data.EsDocumentoValido !== false;
+
     return {
         fecha,
         empresa,
@@ -114,6 +122,8 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
         medio_pago: normalizarMedioPago(data.MedioPago),
         numero_operacion: data.NumeroOperacion != null ? String(data.NumeroOperacion).trim() : '',
         confianza,
+        moneda,
+        es_documento_valido,
         pedido_mencionado: data.PedidoMencionado != null ? String(data.PedidoMencionado).trim() : '',
         items,
     };

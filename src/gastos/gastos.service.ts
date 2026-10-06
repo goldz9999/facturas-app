@@ -895,7 +895,7 @@ export class GastosService {
     // filter de PostgREST. Si el volumen crece de forma importante, esto es
     // el primer punto a revisar (mover el filtro a SQL o a una vista).
     async listar(filtros: FiltrosGastos, empresaId?: EmpresaFiltro) {
-        const limite = Math.min(filtros.limite ?? 50, 200);
+        const limite = Math.min(filtros.limite ?? 50, 1000);
         const offset = filtros.offset ?? 0;
 
         let query = this.supabase

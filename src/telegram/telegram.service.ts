@@ -135,11 +135,18 @@ export class TelegramService {
                 'telegram',
             );
 
-            // procesarArchivoIndividual nunca devuelve success:false en la
-            // práctica (esa rama solo la usa procesarTextoLibre, que comparte
-            // el mismo tipo de retorno) -- este chequeo es solo para que
-            // TypeScript angoste el tipo y no exista en runtime otro camino.
-            if (!resultado.success) return;
+            if (!resultado.success) {
+                // La imagen no es un comprobante válido (captura de web, cotización, etc.)
+                if ((resultado as any).no_es_comprobante) {
+                    await this.enviarMensaje(
+                        chatId,
+                        '🤔 Esta imagen no parece ser un comprobante de pago o factura completada. ' +
+                        'No se registró ningún gasto.\n\n' +
+                        'Si es una factura pendiente de pago, envíala cuando ya esté pagada.',
+                    );
+                }
+                return;
+            }
 
             // Es audio si el propio pipeline lo marcó como tal, sin importar
             // si la persona dijo o no una empresa/n° de factura al hablar.
@@ -605,7 +612,7 @@ export class TelegramService {
     private async confirmarConfianzaMedia(chatId: number | string, gastoId: number, montoDetectado: number) {
         await this.enviarMensaje(
             chatId,
-            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${montoDetectado}). ¿Está correcto?`,
+            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}). ¿Está correcto?`,
             {
                 inline_keyboard: [
                     [
@@ -621,7 +628,7 @@ export class TelegramService {
         await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
         await this.enviarMensaje(
             chatId,
-            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${montoDetectado}, puede estar mal). ` +
+            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}, puede estar mal). ` +
             `¿Cuál es el monto correcto? Respóndeme solo el número, ej: 45.50`,
         );
     }
@@ -637,7 +644,7 @@ export class TelegramService {
 
         await this.gastosService.corregirMonto(gastoId, monto);
         await this.telegramEstado.limpiar(Number(chatId));
-        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto}.`);
+        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto.toFixed(2)}.`);
         await this.preguntarComprobanteSiFalta(chatId, gastoId);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
@@ -1019,10 +1026,15 @@ export class TelegramService {
         const esc = (t: any) =>
             String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+        const moneda: 'PEN' | 'USD' = resultado.moneda === 'USD' ? 'USD' : 'PEN';
+        const simbolo = moneda === 'USD' ? '$' : 'S/';
+        const fmt = (n: number | null | undefined) =>
+            n != null ? `${simbolo} ${Number(n).toFixed(2)}` : null;
+
         const items = Array.isArray(resultado.items) ? resultado.items : [];
         const lineas = items.map((item: any) => {
             const cant = item.cantidad > 0 ? `${item.cantidad} x ` : '';
-            const costo = item.costo != null ? item.costo : '-';
+            const costo = item.costo != null ? fmt(item.costo) : '-';
             return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
         });
 
@@ -1051,11 +1063,16 @@ export class TelegramService {
             msg = '💬 <b>Gasto registrado</b> (sin comprobante)\n\n';
         }
         if (resultado.fecha) msg += `📅 <b>Fecha:</b> ${esc(resultado.fecha)}\n`;
+        if (moneda === 'USD') msg += `💱 <b>Moneda:</b> Dólares (USD)\n`;
         if (lineas.length) msg += `\n<b>Productos:</b>\n${lineas.join('\n')}`;
 
-        if (resultado.subtotal != null) msg += `\n\n💵 <b>Sub Total:</b> ${resultado.subtotal}`;
-        if (resultado.igv != null) msg += `\n📊 <b>IGV:</b> ${resultado.igv}`;
-        if (resultado.total != null) msg += `\n💰 <b>Total:</b> ${resultado.total}`;
+        if (resultado.subtotal != null) msg += `\n\n💵 <b>Sub Total:</b> ${fmt(resultado.subtotal)}`;
+        if (resultado.igv != null) msg += `\n📊 <b>IGV:</b> ${fmt(resultado.igv)}`;
+        if (resultado.total != null) msg += `\n💰 <b>Total:</b> ${fmt(resultado.total)}`;
+
+        if (moneda === 'USD') {
+            msg += `\n\n⚠️ <i>El gasto está en dólares. Para convertirlo a soles, responde con el tipo de cambio (ej: 3.80).</i>`;
+        }
 
         return msg;
     }
