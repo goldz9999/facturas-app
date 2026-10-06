@@ -173,13 +173,15 @@ export class TelegramService {
                 }
             }
 
-            // Si es audio y no quedó pendiente una corrección de monto (que
-            // ya te va a hacer escribir igual), preguntamos si tiene
-            // comprobante para adjuntar después. Si ya le pedimos corregir
-            // el monto, evitamos bombardear con dos preguntas seguidas: se
-            // pregunta por el comprobante recién cuando responda esa.
+            // Si es audio y no quedó pendiente una corrección de monto,
+            // preguntamos empresa (si tiene acceso a varias) y luego
+            // personal/empresa. Si quedó pendiente la confianza, todo esto
+            // se retoma desde el callback correspondiente.
             if (esAudio && !pidioConfianza) {
-                await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+                const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
+                if (!empresaPendiente) {
+                    await this.preguntarTipoParaAudio(chatId, resultado.gasto_id, usuario.id);
+                }
             }
 
             // Matching de proveedor/categoría (sección 9 de requerimientos):
@@ -298,6 +300,23 @@ export class TelegramService {
                     { text: '❌ No', callback_data: `comprobante_no:${gastoId}` },
                 ],
             ],
+        });
+    }
+
+    // Pregunta si el gasto de audio es personal o de empresa, luego comprobante.
+    // Se llama cuando el gasto es de audio y el usuario puede registrar personal.
+    // Si no puede registrar personal, va directo a comprobante.
+    private async preguntarTipoParaAudio(chatId: number | string, gastoId: number, usuarioId: number) {
+        const usuario = await this.usuariosService.obtenerPorId(usuarioId);
+        if (!usuario?.puede_registrar_personal) {
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+            return;
+        }
+        await this.enviarMensaje(chatId, '¿Es un gasto personal o de la empresa?', {
+            inline_keyboard: [[
+                { text: '🙋 Personal', callback_data: `audio_tipo:${gastoId}:personal` },
+                { text: '🏢 Empresa', callback_data: `audio_tipo:${gastoId}:empresa` },
+            ]],
         });
     }
 
@@ -712,7 +731,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'empresa', 'pedido', 'pedido_lista'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -795,7 +814,19 @@ export class TelegramService {
                 return;
             }
 
-            // Respondió a "¿A qué empresa pertenece este gasto?" (Paso 32).
+            // Respondido "¿Personal o empresa?" para un gasto de audio.
+            if (accion === 'audio_tipo') {
+                const esPersonal = segundoIdStr === 'personal';
+                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                await this.enviarMensaje(
+                    chatId,
+                    esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Respondió a "¿A qué empresa pertenece este gasto?" (Paso 32/33).
             // Se corrige el gasto (se había creado con la empresa por
             // defecto) y recién ahí se retoma la pregunta de categoría, que
             // depende de la empresa correcta.
@@ -804,7 +835,13 @@ export class TelegramService {
                 await this.gastosService.actualizarEmpresa(gastoId, empresaId);
                 const gasto = await this.gastosService.obtenerPorId(gastoId);
                 if (!gasto.categoria_id) {
-                    await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
+                    if (gasto.proveedor_id) {
+                        await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id);
+                    } else {
+                        // Gasto de audio sin proveedor: saltar categoría y
+                        // preguntar directamente si es personal o de empresa.
+                        await this.preguntarTipoParaAudio(chatId, gastoId, usuario.id);
+                    }
                 }
                 return;
             }
@@ -1034,7 +1071,7 @@ export class TelegramService {
         const items = Array.isArray(resultado.items) ? resultado.items : [];
         const lineas = items.map((item: any) => {
             const cant = item.cantidad > 0 ? `${item.cantidad} x ` : '';
-            const costo = item.costo != null ? fmt(item.costo) : '-';
+            const costo = item.costo > 0 ? fmt(item.costo) : (item.costo == null ? '-' : '?');
             return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
         });
 

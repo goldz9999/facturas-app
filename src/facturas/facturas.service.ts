@@ -142,7 +142,7 @@ export class FacturasService {
         })
         .then(({ error: uploadError }) => {
           if (uploadError) {
-            this.logger.warn(`No se pudo subir el audio a Storage: ${uploadError.message}`);
+            console.warn(`No se pudo subir el audio a Storage: ${uploadError.message}`);
             // No lanzamos error: el gasto se registra igual sin evidencia de audio
           }
         });

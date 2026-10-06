@@ -529,6 +529,10 @@ Peso o volumen:
 
 No conviertas kg, gramos, litros o ml en Cantidad.
 
+ATENCIÓN: "centimos" es dinero (precio), no es una unidad de peso ni volumen.
+"50 centimos de rocoto" → NO añadas "(50 cm)" a la descripción; es el precio del artículo.
+→ Descripcion: "Rocoto molido", Importe: 0.50
+
 Si la cantidad no fue mencionada:
 null
 
@@ -540,17 +544,38 @@ Nunca asumas cantidad = 1.
 
 Extrae los precios únicamente cuando la persona los haya mencionado.
 
+MONTOS EN CENTIMOS:
+"50 centimos", "cincuenta centimos" → 0.50
+"un sol cincuenta" → 1.50
+"dos soles con ochenta" → 2.80
+
+IMPORTANTE: "centimos" es dinero (céntimos de sol), NO es centímetros (cm).
+No pongas "50 cm" ni "(50 cm)" en la descripción cuando la persona dice precio.
+
 PrecioUnitario:
-Solo úsalo cuando la persona indique claramente un precio por unidad.
+Solo úsalo cuando la persona indique claramente un precio por unidad discreta (pieza, botella, bolsa, etc.).
 
 Ejemplo:
 "compré 3 gaseosas a 4 soles cada una"
+→ Cantidad = 3, PrecioUnitario = 4
 
-Cantidad = 3
-PrecioUnitario = 4
+PRECIO POR PESO (kg, gramos, litros):
+Cuando la persona dice "X kg a Y soles el kilo" (o "por kilo", "el kilo", "el litro"):
+→ PrecioUnitario: null (no aplica a peso)
+→ Calcula e incluye el Importe = X × Y
+
+Ejemplo:
+"3 kilos de plátano a 2 soles el kilo"
+→ Descripcion: "Plátano (3 kg)", Cantidad: null, PrecioUnitario: null, Importe: 6
+
+Ejemplo:
+"medio kilo de queso a 20 soles el kilo"
+→ Descripcion: "Queso (0.5 kg)", Cantidad: null, PrecioUnitario: null, Importe: 10
 
 Importe:
 Usa el monto que la persona indique como pagado para ese artículo o gasto.
+Si el monto viene expresado solo en centimos, conviértelo a soles:
+"50 centimos de rocoto" → Descripcion: "Rocoto molido", Importe: 0.50
 
 No calcules un precio unitario a partir del importe.
 
