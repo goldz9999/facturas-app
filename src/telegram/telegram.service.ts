@@ -199,27 +199,24 @@ export class TelegramService {
             // false en el caso agrupado (esa confirmación está gateada por
             // el mismo !vinculado_a más arriba), así que no hay riesgo de
             // encimar preguntas.
-            if (!esAudio && resultado.falta_categoria && !pidioConfianza) {
-                // Igual que en preguntarCategoriaSiFalta: si hay más de una
-                // empresa y quien sube la factura es super_admin, se
-                // pregunta la empresa primero (la categoría depende de
-                // ella) y se retoma la pregunta de categoría cuando
-                // responda el botón "empresa:" (ver manejarCallbackQuery).
+            if (!esAudio && !pidioConfianza) {
+                // La empresa se pregunta SIEMPRE para imágenes cuando el usuario
+                // tiene acceso a varias, sin importar si falta categoría o no.
+                // Antes solo se preguntaba cuando falta_categoria=true, por lo
+                // que un proveedor ya conocido (categoría aprendida) registraba
+                // en la empresa por defecto sin preguntar — bug reportado.
                 const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
                 if (!empresaPendiente) {
-                    await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                    if (resultado.falta_categoria) {
+                        await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                    } else if (!resultado.vinculado_a) {
+                        // Proveedor ya conocido con categoría aprendida: solo
+                        // falta preguntar el pedido si la empresa lo usa.
+                        await this.preguntarPedidoSiFalta(chatId, resultado.gasto_id, resultado.pedido_mencionado);
+                    }
                 }
-            } else if (!pidioConfianza && !resultado.vinculado_a) {
-                // RF-11: cuando NO hay que preguntar categoría (proveedor ya
-                // conocido, clasificación aprendida) la cadena
-                // empresa→categoría→tipo→pedido nunca se dispara, así que el
-                // gasto quedaría sin pedido sin haber preguntado. Acá se
-                // cubre ese camino. Se excluyen los casos donde ya hay otra
-                // pregunta abierta (confirmación de confianza o de
-                // agrupación) para no encimar dos botoneras: en el de
-                // confianza, la pregunta se retoma desde el callback
-                // media_ok, igual que ya hace la de categoría.
-                await this.preguntarPedidoSiFalta(chatId, resultado.gasto_id, resultado.pedido_mencionado);
+                // Si empresaPendiente=true: la cadena categoría→tipo→pedido
+                // se retoma desde el callback 'empresa:'.
             }
 
             // La heurística de agrupación (facturas.service.ts) decidió que
@@ -836,12 +833,17 @@ export class TelegramService {
                 const gasto = await this.gastosService.obtenerPorId(gastoId);
                 if (!gasto.categoria_id) {
                     if (gasto.proveedor_id) {
+                        // Imagen con proveedor nuevo: preguntar categoría.
                         await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id);
                     } else {
-                        // Gasto de audio sin proveedor: saltar categoría y
-                        // preguntar directamente si es personal o de empresa.
+                        // Audio (o imagen sin proveedor): saltar categoría y
+                        // preguntar si es personal o de empresa.
                         await this.preguntarTipoParaAudio(chatId, gastoId, usuario.id);
                     }
+                } else {
+                    // Proveedor ya conocido con categoría aprendida: la empresa
+                    // es lo único que faltaba → ir directo a pedido.
+                    await this.preguntarPedidoSiFalta(chatId, gastoId);
                 }
                 return;
             }
