@@ -97,6 +97,7 @@ export interface DatosItemComprobante {
     producto: string;
     cantidad: number | null;
     costo: number | null;
+    precio_unitario?: number | null;
 }
 
 // Filtros de GastosController.listar() / GET /gastos — cubre la sección 24
@@ -1480,6 +1481,7 @@ export class GastosService {
                 producto: i.producto,
                 cantidad: i.cantidad ?? null,
                 costo: i.costo ?? null,
+                precio_unitario: i.precio_unitario ?? null,
             }));
 
         if (filas.length === 0) return [];

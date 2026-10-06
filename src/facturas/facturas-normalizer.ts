@@ -65,7 +65,7 @@ export interface FacturaNormalizada {
     // libre ("para el pedido Dragon"). Cadena vacía si no mencionó ninguno.
     // NO es un id: el backend lo resuelve contra `pedidos` de la empresa.
     pedido_mencionado: string;
-    items: Array<{ producto: string; cantidad: number; costo: number }>;
+    items: Array<{ producto: string; cantidad: number; costo: number; precio_unitario: number | null }>;
 }
 
 // Equivalente a "Separar articulos1" + "Extraer ID Factura1" en n8n
@@ -92,10 +92,12 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
                 costo = !isNaN(c) && !isNaN(u) ? c * u : null;
             }
 
+            const precioUnitario = art.PrecioUnitario != null ? Number(art.PrecioUnitario) || null : null;
             return {
                 producto: art.Descripcion || '',
                 cantidad: cantidad || 0,
                 costo: Number(costo) || 0,
+                precio_unitario: precioUnitario,
             };
         });
 

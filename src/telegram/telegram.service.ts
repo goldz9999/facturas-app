@@ -1109,9 +1109,11 @@ export class TelegramService {
 
         const items = Array.isArray(resultado.items) ? resultado.items : [];
         const lineas = items.map((item: any) => {
-            const cant = item.cantidad > 0 ? `${item.cantidad} x ` : '';
+            const pu = item.precio_unitario != null && item.precio_unitario > 0 ? fmt(item.precio_unitario) : null;
+            const cant = item.cantidad > 0 ? `${item.cantidad}` : '';
             const costo = item.costo > 0 ? fmt(item.costo) : (item.costo == null ? '-' : '?');
-            return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
+            const detalle = cant && pu ? `${cant} × ${pu}` : cant ? `${cant} ×` : '';
+            return `• ${esc(item.producto)}${detalle ? '  ' + detalle : ''}  —  ${esc(costo)}`;
         });
 
         // Tres casos posibles: factura real (con comprobante en BD), captura
