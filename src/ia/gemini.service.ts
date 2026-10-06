@@ -500,6 +500,22 @@ Debe producir:
 
 No agregues productos que la persona no mencione.
 
+==================================================
+1.1. TIPO DE GASTO POR ARTÍCULO
+==================================================
+
+Si la persona indica explícitamente que un artículo es personal o de empresa, añade "TipoGasto".
+
+Señales de gasto personal: "para mí", "para casa", "personal", "para mi familia", "esto no es del trabajo".
+Señales de gasto de empresa: "para el trabajo", "para la empresa", "para el negocio", "material de oficina".
+
+Si la persona NO aclara el tipo de un artículo, omite el campo TipoGasto de ese artículo.
+
+Ejemplo:
+"Compré resmas de papel para la oficina y una agenda para mí"
+→ Resmas de papel: TipoGasto: "empresa"
+→ Agenda: TipoGasto: "personal"
+
 Si la persona describe solamente un gasto general:
 
 "gasté 50 soles en gasolina"
@@ -783,7 +799,8 @@ Estructura:
 "Descripcion": "string",
 "Cantidad": "number|null",
 "PrecioUnitario": "number|null",
-"Importe": "number|null"
+"Importe": "number|null",
+"TipoGasto": "personal|empresa|omitir si no se mencionó"
 }
 ],
 "SubTotal": "number|null",
@@ -806,6 +823,7 @@ export interface FacturaExtraida {
         Cantidad?: number | null;
         PrecioUnitario?: number | null;
         Importe?: number | null;
+        TipoGasto?: 'personal' | 'empresa';
     }>;
     SubTotal?: number | null;
     IGV?: number | null;

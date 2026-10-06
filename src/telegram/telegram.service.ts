@@ -184,7 +184,7 @@ export class TelegramService {
             if (esAudio && !pidioConfianza) {
                 const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
                 if (!empresaPendiente) {
-                    await this.preguntarTipoParaAudio(chatId, resultado.gasto_id, usuario.id);
+                    await this.manejarTipoAudioConItems(chatId, resultado.gasto_id, resultado.items ?? [], usuario.id);
                 }
             }
 
@@ -311,6 +311,46 @@ export class TelegramService {
                 ],
             ],
         });
+    }
+
+    // Detecta items con tipo_gasto en un audio y actúa:
+    // - todos personal → auto-marca el gasto como personal
+    // - mixto → muestra desglose y pide decisión con botones
+    // - sin clasificar → flujo normal (preguntarTipoParaAudio)
+    private async manejarTipoAudioConItems(chatId: number | string, gastoId: number, items: any[], usuarioId: number) {
+        const personales = items.filter((i) => i.tipo_gasto === 'personal');
+        const empresa = items.filter((i) => i.tipo_gasto === 'empresa');
+        const hayPersonal = personales.length > 0;
+        const hayEmpresa = empresa.length > 0;
+
+        if (hayPersonal && !hayEmpresa) {
+            await this.gastosService.actualizar(gastoId, { es_personal: true });
+            await this.enviarMensaje(chatId, '🙋 Detecté que todos los ítems son personales. Guardado como gasto personal.');
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+            return;
+        }
+
+        if (hayPersonal && hayEmpresa) {
+            const sumar = (arr: any[]) => arr.reduce((s, i) => s + (Number(i.costo) || 0), 0);
+            const montoP = sumar(personales);
+            const montoE = sumar(empresa);
+            const fmt = (n: number) => `S/ ${n.toFixed(2)}`;
+            const listP = personales.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
+            const listE = empresa.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
+            const msg = `⚠️ Detecté ítems mezclados:\n\n🙋 <b>Personal</b> — ${fmt(montoP)}\n${listP}\n\n🏢 <b>Empresa</b> — ${fmt(montoE)}\n${listE}\n\n¿Qué hago?`;
+            await this.enviarMensaje(chatId, msg, {
+                inline_keyboard: [
+                    [
+                        { text: '🙋 Todo personal', callback_data: `audio_mix_personal:${gastoId}` },
+                        { text: '🏢 Todo empresa', callback_data: `audio_mix_empresa:${gastoId}` },
+                    ],
+                    [{ text: '✂️ Separar en dos gastos', callback_data: `audio_mix_separar:${gastoId}:${montoP}:${montoE}` }],
+                ],
+            });
+            return;
+        }
+
+        await this.preguntarTipoParaAudio(chatId, gastoId, usuarioId);
     }
 
     // Pregunta si el gasto de audio es personal o de empresa, luego comprobante.
@@ -765,7 +805,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -855,6 +895,46 @@ export class TelegramService {
                 await this.enviarMensaje(
                     chatId,
                     esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Ítems mixtos: usuario eligió "todo personal" o "todo empresa".
+            if (accion === 'audio_mix_personal' || accion === 'audio_mix_empresa') {
+                const esPersonal = accion === 'audio_mix_personal';
+                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                await this.enviarMensaje(
+                    chatId,
+                    esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Ítems mixtos: usuario eligió separar en dos gastos.
+            if (accion === 'audio_mix_separar') {
+                const [, , montoPStr, montoEStr] = data.split(':');
+                const montoPersonal = parseFloat(montoPStr) || 0;
+                const montoEmpresa = parseFloat(montoEStr) || 0;
+                const gastoOriginal = await this.gastosService.obtenerPorId(gastoId);
+                // Gasto original pasa a ser el de empresa.
+                await this.gastosService.actualizar(gastoId, { es_personal: false, monto: montoEmpresa });
+                // Nuevo gasto para la parte personal.
+                if (montoPersonal > 0) {
+                    await this.gastosService.crear({
+                        usuario_id: usuario.id,
+                        empresa_id: gastoOriginal.empresa_id,
+                        descripcion: gastoOriginal.descripcion,
+                        monto: montoPersonal,
+                        fecha: gastoOriginal.fecha,
+                        es_personal: true,
+                        confianza: 'alta',
+                    });
+                }
+                await this.enviarMensaje(
+                    chatId,
+                    `✂️ Separado.\n🏢 Empresa: S/ ${montoEmpresa.toFixed(2)}\n🙋 Personal: S/ ${montoPersonal.toFixed(2)}`,
                 );
                 await this.preguntarSiTieneComprobante(chatId, gastoId);
                 return;
