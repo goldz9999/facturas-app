@@ -1405,6 +1405,9 @@ export class GastosService {
         await client.from('comprobantes').delete().eq('gasto_id', gastoId);
         await client.from('pagos').delete().eq('gasto_id', gastoId);
         await client.from('evidencias').delete().eq('gasto_id', gastoId);
+        // telegram_estado puede tener una FK a este gasto (estado conversacional
+        // pendiente); se limpia para no violar la constraint al borrar el gasto.
+        await client.from('telegram_estado').delete().eq('gasto_id', gastoId);
 
         const { error } = await client.from('gastos').delete().eq('id', gastoId);
         if (error) {
