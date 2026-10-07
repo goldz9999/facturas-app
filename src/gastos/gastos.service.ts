@@ -822,7 +822,7 @@ export class GastosService {
     // para siempre aunque la factura ya estuviera bien vinculada por debajo.
     async actualizarCategoria(
         gastoId: number,
-        categoriaId: number,
+        categoriaId: number | null,
         esPersonal: boolean,
         proveedorId?: number | null,
         descripcion?: string | null,

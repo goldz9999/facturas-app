@@ -479,9 +479,16 @@ export class FacturasService {
             ? { tipo: 'audio' as const, storage_path: nombreArchivoFinal, origen, huella: null }
             : null;
 
+        // Audio sin empresa detectada: usar los ítems como descripción
+        // para que el panel muestre algo útil (ej. "Mandarina, Cemento, Clavos").
+        let descripcionGasto: string | null = factura.empresa || null;
+        if (esAudio && !descripcionGasto && factura.items.length > 0) {
+          descripcionGasto = factura.items.map((i) => i.producto).filter(Boolean).join(', ') || null;
+        }
+
         const { gasto } = await this.gastosService.crear({
           usuario_id: usuarioId,
-          descripcion: factura.empresa || null,
+          descripcion: descripcionGasto,
           monto: montoDetectado,
           fecha: factura.fecha,
           confianza: factura.confianza,
