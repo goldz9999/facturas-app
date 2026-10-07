@@ -90,7 +90,7 @@ export class TelegramService {
                 return;
             }
             if (estadoPrevio?.esperando === 'confirmar_monto' && estadoPrevio.gasto_id && message.text) {
-                await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text);
+                await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text, estadoPrevio.meta?.items ?? []);
                 return;
             }
 
@@ -172,7 +172,7 @@ export class TelegramService {
                     await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total);
                     pidioConfianza = true;
                 } else if (resultado.confianza === 'baja') {
-                    await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total);
+                    await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, resultado.items ?? []);
                     pidioConfianza = true;
                 }
             }
@@ -324,7 +324,7 @@ export class TelegramService {
         const hayEmpresa = empresa.length > 0;
 
         if (hayPersonal && !hayEmpresa) {
-            await this.gastosService.actualizar(gastoId, { es_personal: true });
+            await this.gastosService.marcarComoPersonal(gastoId);
             await this.enviarMensaje(chatId, '🙋 Detecté que todos los ítems son personales. Guardado como gasto personal.');
             await this.preguntarSiTieneComprobante(chatId, gastoId);
             return;
@@ -723,8 +723,8 @@ export class TelegramService {
         );
     }
 
-    private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number) {
-        await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
+    private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number, items?: any[]) {
+        await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId, { items: items ?? [] });
         await this.enviarMensaje(
             chatId,
             `🔎 No pude leer bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}, puede estar mal). ` +
@@ -732,7 +732,7 @@ export class TelegramService {
         );
     }
 
-    private async manejarCorreccionMonto(chatId: number | string, gastoId: number, texto: string) {
+    private async manejarCorreccionMonto(chatId: number | string, gastoId: number, texto: string, items: any[] = []) {
         const normalizado = texto.trim().replace(',', '.').replace(/[^\d.]/g, '');
         const monto = normalizado ? parseFloat(normalizado) : NaN;
 
@@ -750,7 +750,7 @@ export class TelegramService {
         if (!gasto.proveedor_id) {
             const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, gasto.usuario_id);
             if (!empresaPendiente) {
-                await this.preguntarTipoParaAudio(chatId, gastoId, gasto.usuario_id);
+                await this.manejarTipoAudioConItems(chatId, gastoId, items, gasto.usuario_id);
             }
         } else {
             await this.preguntarComprobanteSiFalta(chatId, gastoId);
@@ -930,7 +930,11 @@ export class TelegramService {
             // Respondido "¿Personal o empresa?" para un gasto de audio.
             if (accion === 'audio_tipo') {
                 const esPersonal = segundoIdStr === 'personal';
-                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                if (esPersonal) {
+                    await this.gastosService.marcarComoPersonal(gastoId);
+                } else {
+                    await this.gastosService.actualizar(gastoId, { es_personal: false });
+                }
                 await this.enviarMensaje(
                     chatId,
                     esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
@@ -942,7 +946,11 @@ export class TelegramService {
             // Ítems mixtos: usuario eligió "todo personal" o "todo empresa".
             if (accion === 'audio_mix_personal' || accion === 'audio_mix_empresa') {
                 const esPersonal = accion === 'audio_mix_personal';
-                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                if (esPersonal) {
+                    await this.gastosService.marcarComoPersonal(gastoId);
+                } else {
+                    await this.gastosService.actualizar(gastoId, { es_personal: false });
+                }
                 await this.enviarMensaje(
                     chatId,
                     esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',

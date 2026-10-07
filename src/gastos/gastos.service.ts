@@ -854,6 +854,17 @@ export class GastosService {
     // obtenerEmpresaIdDeUsuario) y, si hay más de una empresa registrada,
     // se le pregunta con botones y se corrige acá antes de preguntar
     // categoría (la categoría depende de la empresa).
+    // Marca el gasto como puramente personal y quita su empresa_id para que
+    // no aparezca en los libros de ninguna empresa.
+    async marcarComoPersonal(gastoId: number) {
+        const { error } = await this.supabase
+            .getClient()
+            .from('gastos')
+            .update({ es_personal: true, empresa_id: null, pendiente_revision: false })
+            .eq('id', gastoId);
+        if (error) throw new InternalServerErrorException(`Error marcando gasto como personal: ${error.message}`);
+    }
+
     async actualizarEmpresa(gastoId: number, empresaId: number) {
         const { data: gasto, error } = await this.supabase
             .getClient()

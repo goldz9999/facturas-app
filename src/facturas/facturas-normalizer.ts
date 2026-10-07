@@ -92,7 +92,11 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
                 costo = !isNaN(c) && !isNaN(u) ? c * u : null;
             }
 
-            const precioUnitario = art.PrecioUnitario != null ? Number(art.PrecioUnitario) || null : null;
+            // Si Gemini no devolvió precio unitario pero tenemos cantidad > 1 y costo, lo calculamos.
+            let precioUnitario = art.PrecioUnitario != null ? Number(art.PrecioUnitario) || null : null;
+            if (precioUnitario == null && cantidad > 1 && costo) {
+                precioUnitario = Number(costo) / cantidad;
+            }
             const tipoGasto: 'personal' | 'empresa' | undefined =
                 art.TipoGasto === 'personal' ? 'personal' : art.TipoGasto === 'empresa' ? 'empresa' : undefined;
             return {
