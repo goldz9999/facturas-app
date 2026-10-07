@@ -350,6 +350,31 @@ export class TelegramService {
             return;
         }
 
+        // Sin clasificar: si hay ítems con nombre, preguntar uno a uno para aprender.
+        // Si no hay ítems (o el usuario no puede registrar personal), flujo normal.
+        const usuario = await this.usuariosService.obtenerPorId(usuarioId);
+        const itemsConNombre = items.filter((i) => i.producto);
+        if (itemsConNombre.length > 0 && usuario?.puede_registrar_personal) {
+            const primerItem = itemsConNombre[0];
+            await this.telegramEstado.guardar(Number(chatId), 'clasificar_item', gastoId, {
+                items: itemsConNombre.map((i: any) => ({ producto: i.producto, costo: i.costo, tipo_gasto: undefined })),
+                idx: 0,
+            });
+            await this.enviarMensaje(
+                chatId,
+                `No sé si cada ítem es personal o de empresa. ¿<b>${primerItem.producto}</b> es personal o de la empresa?`,
+                {
+                    inline_keyboard: [
+                        [
+                            { text: '🙋 Personal', callback_data: `item_tipo:${gastoId}:personal` },
+                            { text: '🏢 Empresa', callback_data: `item_tipo:${gastoId}:empresa` },
+                        ],
+                    ],
+                },
+            );
+            return;
+        }
+
         await this.preguntarTipoParaAudio(chatId, gastoId, usuarioId);
     }
 
@@ -443,6 +468,7 @@ export class TelegramService {
                 })),
             );
         }
+        filas.push([{ text: '🚫 Sin categoría', callback_data: `cat:${gastoId}:${proveedorId}:0` }]);
         await this.enviarMensaje(chatId, '🏷️ ¿En qué categoría entra este gasto?', {
             inline_keyboard: filas,
         });
@@ -515,11 +541,15 @@ export class TelegramService {
         categoriaId: number,
         esPersonal: boolean,
     ) {
-        await this.gastosService.actualizarCategoria(gastoId, categoriaId, esPersonal, proveedorId);
+        await this.gastosService.actualizarCategoria(gastoId, categoriaId || null, esPersonal, proveedorId);
         const gastoParaEmpresa = await this.gastosService.obtenerPorId(gastoId);
-        await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal, gastoParaEmpresa.empresa_id);
-
-        await this.enviarMensaje(chatId, '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.');
+        if (categoriaId) {
+            await this.proveedoresService.guardarSugerencia(proveedorId, categoriaId, esPersonal, gastoParaEmpresa.empresa_id);
+            await this.enviarMensaje(chatId, '✅ Clasificado. La próxima vez que aparezca este proveedor lo recordaré.');
+        } else {
+            await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+            await this.enviarMensaje(chatId, esPersonal ? '🙋 Guardado como personal.' : '🏢 Guardado como empresa.');
+        }
 
         // RF-11: última pregunta de la cadena (empresa → categoría → tipo →
         // pedido). Va al final porque la lista de pedidos depende de la
@@ -714,9 +744,18 @@ export class TelegramService {
         await this.gastosService.corregirMonto(gastoId, monto);
         await this.telegramEstado.limpiar(Number(chatId));
         await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto.toFixed(2)}.`);
-        await this.preguntarComprobanteSiFalta(chatId, gastoId);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
-        await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
+        // Audio: sin proveedor ni comprobante → flujo empresa → personal/empresa → comprobante.
+        // Imagen: tiene proveedor → flujo comprobante → categoría.
+        if (!gasto.proveedor_id) {
+            const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, gasto.usuario_id);
+            if (!empresaPendiente) {
+                await this.preguntarTipoParaAudio(chatId, gastoId, gasto.usuario_id);
+            }
+        } else {
+            await this.preguntarComprobanteSiFalta(chatId, gastoId);
+            await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
+        }
     }
 
     private async manejarTipoCambio(chatId: number | string, gastoId: number, texto: string) {
@@ -805,7 +844,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar', 'item_tipo'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -920,8 +959,9 @@ export class TelegramService {
                 const gastoOriginal = await this.gastosService.obtenerPorId(gastoId);
                 // Gasto original pasa a ser el de empresa.
                 await this.gastosService.actualizar(gastoId, { es_personal: false, monto: montoEmpresa });
-                // Nuevo gasto para la parte personal.
+                // Nuevo gasto para la parte personal, con el mismo audio como evidencia.
                 if (montoPersonal > 0) {
+                    const audioEv = (gastoOriginal.evidencias as any[])?.find((e: any) => e.tipo === 'audio');
                     await this.gastosService.crear({
                         usuario_id: usuario.id,
                         empresa_id: gastoOriginal.empresa_id,
@@ -930,6 +970,9 @@ export class TelegramService {
                         fecha: gastoOriginal.fecha,
                         es_personal: true,
                         confianza: 'alta',
+                        evidencia: audioEv
+                            ? { tipo: audioEv.tipo, storage_path: audioEv.storage_path, origen: audioEv.origen ?? 'telegram' }
+                            : undefined,
                     });
                 }
                 await this.enviarMensaje(
@@ -937,6 +980,39 @@ export class TelegramService {
                     `✂️ Separado.\n🏢 Empresa: S/ ${montoEmpresa.toFixed(2)}\n🙋 Personal: S/ ${montoPersonal.toFixed(2)}`,
                 );
                 await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Clasificación per-ítem: usuario respondió si un ítem es personal o empresa.
+            // callback_data: item_tipo:<gastoId>:<tipo>   (tipo = 'personal' | 'empresa')
+            if (accion === 'item_tipo') {
+                const tipo = segundoIdStr as 'personal' | 'empresa';
+                const estado = await this.telegramEstado.obtener(Number(chatId));
+                const meta = estado?.meta as { items: any[]; idx: number } | null;
+                if (!meta) return;
+                const items = meta.items;
+                const idx = meta.idx;
+                items[idx].tipo_gasto = tipo;
+                const nextIdx = idx + 1;
+                if (nextIdx < items.length) {
+                    const nextItem = items[nextIdx];
+                    await this.telegramEstado.guardar(Number(chatId), 'clasificar_item', gastoId, { items, idx: nextIdx });
+                    await this.enviarMensaje(
+                        chatId,
+                        `¿<b>${nextItem.producto}</b> es personal o de la empresa?`,
+                        {
+                            inline_keyboard: [
+                                [
+                                    { text: '🙋 Personal', callback_data: `item_tipo:${gastoId}:personal` },
+                                    { text: '🏢 Empresa', callback_data: `item_tipo:${gastoId}:empresa` },
+                                ],
+                            ],
+                        },
+                    );
+                } else {
+                    await this.telegramEstado.limpiar(Number(chatId));
+                    await this.manejarTipoAudioConItems(chatId, gastoId, items, usuario.id);
+                }
                 return;
             }
 
@@ -996,13 +1072,13 @@ export class TelegramService {
             // (data), no en segundoIdStr, porque acá hay más de dos ids.
             if (accion === 'cat') {
                 const [, , proveedorIdStr, categoriaIdStr] = data.split(':');
-                await this.preguntarTipoGasto(
-                    chatId,
-                    gastoId,
-                    Number(proveedorIdStr),
-                    Number(categoriaIdStr),
-                    usuario.id,
-                );
+                const categoriaId = Number(categoriaIdStr);
+                if (categoriaId === 0) {
+                    // Usuario eligió "Sin categoría": saltar directo a tipo de gasto.
+                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), 0, usuario.id);
+                } else {
+                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), categoriaId, usuario.id);
+                }
                 return;
             }
 

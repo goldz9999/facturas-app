@@ -1,7 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 
-export type EstadoEsperando = 'subir_comprobante' | 'confirmar_monto' | 'tipo_cambio';
+export type EstadoEsperando = 'subir_comprobante' | 'confirmar_monto' | 'tipo_cambio' | 'clasificar_item';
 
 export interface TelegramEstado {
     id: number;
@@ -9,6 +9,7 @@ export interface TelegramEstado {
     esperando: EstadoEsperando;
     gasto_id: number | null;
     expira_en: string;
+    meta?: any | null;
 }
 
 // Persiste el estado conversacional del bot (a qué está esperando responder
@@ -19,7 +20,7 @@ export class TelegramEstadoService {
 
     constructor(private supabase: SupabaseService) { }
 
-    async guardar(telegramId: number, esperando: EstadoEsperando, gastoId?: number | null) {
+    async guardar(telegramId: number, esperando: EstadoEsperando, gastoId?: number | null, meta?: any) {
         const expiraEn = new Date(Date.now() + this.TTL_MINUTOS * 60 * 1000).toISOString();
 
         // telegram_id es UNIQUE: upsert reemplaza cualquier estado previo de ese chat.
@@ -32,6 +33,7 @@ export class TelegramEstadoService {
                     esperando,
                     gasto_id: gastoId ?? null,
                     expira_en: expiraEn,
+                    meta: meta ?? null,
                 },
                 { onConflict: 'telegram_id' },
             );
