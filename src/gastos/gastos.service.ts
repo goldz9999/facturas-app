@@ -97,6 +97,7 @@ export interface DatosItemComprobante {
     producto: string;
     cantidad: number | null;
     costo: number | null;
+    precio_unitario?: number | null;
 }
 
 // Filtros de GastosController.listar() / GET /gastos — cubre la sección 24
@@ -895,7 +896,7 @@ export class GastosService {
     // filter de PostgREST. Si el volumen crece de forma importante, esto es
     // el primer punto a revisar (mover el filtro a SQL o a una vista).
     async listar(filtros: FiltrosGastos, empresaId?: EmpresaFiltro) {
-        const limite = Math.min(filtros.limite ?? 50, 200);
+        const limite = Math.min(filtros.limite ?? 50, 1000);
         const offset = filtros.offset ?? 0;
 
         let query = this.supabase
@@ -1405,6 +1406,9 @@ export class GastosService {
         await client.from('comprobantes').delete().eq('gasto_id', gastoId);
         await client.from('pagos').delete().eq('gasto_id', gastoId);
         await client.from('evidencias').delete().eq('gasto_id', gastoId);
+        // telegram_estado puede tener una FK a este gasto (estado conversacional
+        // pendiente); se limpia para no violar la constraint al borrar el gasto.
+        await client.from('telegram_estado').delete().eq('gasto_id', gastoId);
 
         const { error } = await client.from('gastos').delete().eq('id', gastoId);
         if (error) {
@@ -1477,6 +1481,7 @@ export class GastosService {
                 producto: i.producto,
                 cantidad: i.cantidad ?? null,
                 costo: i.costo ?? null,
+                precio_unitario: i.precio_unitario ?? null,
             }));
 
         if (filas.length === 0) return [];

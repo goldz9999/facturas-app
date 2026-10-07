@@ -129,6 +129,23 @@ export class FacturasService {
             );
           }
         });
+    } else {
+      // Para audio: subir el archivo original a Storage para que quede como
+      // evidencia adjunta al gasto (el bot notificará al usuario que puede
+      // ver el audio en el panel web).
+      subidaStorage = this.supabase
+        .getClient()
+        .storage.from(BUCKET)
+        .upload(nombreArchivoFinal, file.buffer, {
+          contentType: mimeType,
+          upsert: true,
+        })
+        .then(({ error: uploadError }) => {
+          if (uploadError) {
+            console.warn(`No se pudo subir el audio a Storage: ${uploadError.message}`);
+            // No lanzamos error: el gasto se registra igual sin evidencia de audio
+          }
+        });
     }
 
     // 2+3. Transcribir + extraer con Gemini.
@@ -141,13 +158,18 @@ export class FacturasService {
     // a Gemini mejor terreno para leer letra por letra antes de estructurar.
     // El upload a Storage sigue corriendo en paralelo (no depende de Gemini).
     const resultado = esAudio
-      ? await this.procesarTextoExtraido(
-        await this.gemini.transcribirAudio(file.buffer, mimeType),
-        usuarioId,
-        origen,
-        true,
-        null,
-      )
+      ? await (async () => {
+          const textoTranscrito = await this.gemini.transcribirAudio(file.buffer, mimeType);
+          const resultadoFinal = await this.procesarTextoExtraido(
+            textoTranscrito,
+            usuarioId,
+            origen,
+            true,
+            { ext, nombreArchivoFinal, huella: null },
+          );
+          await subidaStorage;
+          return resultadoFinal;
+        })()
       : await (async () => {
         const textoTranscrito = await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
         const resultadoFinal = await this.procesarTextoExtraido(
@@ -226,6 +248,16 @@ export class FacturasService {
       return {
         success: false as const,
         sin_gasto: true as const,
+      };
+    }
+
+    // 4c. Si la imagen/documento no es un comprobante válido (ej. captura de
+    // pantalla de una web, cotización pendiente), no se registra ningún gasto.
+    // Solo aplica a imágenes/documentos, no a audio ni texto libre.
+    if (!esAudio && !esTextoLibre && !factura.es_documento_valido) {
+      return {
+        success: false as const,
+        no_es_comprobante: true as const,
       };
     }
     const ext = archivoInfo?.ext ?? '';
@@ -440,6 +472,13 @@ export class FacturasService {
         //    parece factura real (una captura de Yape/transferencia suelta
         //    es solo evidencia + pago, no un comprobante -- ver
         //    definición de pareceFactura arriba).
+        // Para audio con archivo subido a Storage: guardar también la
+        // evidencia de audio para que sea visible en el panel web.
+        const evidenciaAudio =
+          esAudio && nombreArchivoFinal
+            ? { tipo: 'audio' as const, storage_path: nombreArchivoFinal, origen, huella: null }
+            : null;
+
         const { gasto } = await this.gastosService.crear({
           usuario_id: usuarioId,
           descripcion: factura.empresa || null,
@@ -447,7 +486,7 @@ export class FacturasService {
           fecha: factura.fecha,
           confianza: factura.confianza,
           comprobante: esAudio || !pareceFactura ? null : datosComprobante,
-          evidencia: esAudio ? null : datosEvidencia,
+          evidencia: esAudio ? evidenciaAudio : datosEvidencia,
           pago: datosPago,
           items: esAudio || !pareceFactura ? undefined : factura.items,
           categoria_id: categoriaId,
@@ -525,6 +564,7 @@ export class FacturasService {
       total: factura.total_factura || 0,
       medio_pago: factura.medio_pago,
       confianza: factura.confianza,
+      moneda: factura.moneda,
       items: factura.items,
       // Indica si esto generó un comprobante de verdad en la BD, o si
       // "empresa"/"items" acá arriba son solo lo que Gemini leyó de una

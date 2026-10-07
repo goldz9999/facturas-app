@@ -85,6 +85,10 @@ export class TelegramService {
             // como la respuesta a esa pregunta, no como un comando ni un
             // archivo nuevo.
             const estadoPrevio = await this.telegramEstado.obtener(Number(chatId));
+            if (estadoPrevio?.esperando === 'tipo_cambio' && estadoPrevio.gasto_id && message.text) {
+                await this.manejarTipoCambio(chatId, estadoPrevio.gasto_id, message.text);
+                return;
+            }
             if (estadoPrevio?.esperando === 'confirmar_monto' && estadoPrevio.gasto_id && message.text) {
                 await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text);
                 return;
@@ -125,7 +129,7 @@ export class TelegramService {
             // pregunta quedó abandonada: se limpia el estado para que no
             // quede "escuchando" de fondo y confunda una respuesta de texto
             // posterior con la corrección de un gasto viejo.
-            if (estadoPrevio?.esperando === 'confirmar_monto') {
+            if (estadoPrevio?.esperando === 'confirmar_monto' || estadoPrevio?.esperando === 'tipo_cambio') {
                 await this.telegramEstado.limpiar(Number(chatId));
             }
 
@@ -135,11 +139,18 @@ export class TelegramService {
                 'telegram',
             );
 
-            // procesarArchivoIndividual nunca devuelve success:false en la
-            // práctica (esa rama solo la usa procesarTextoLibre, que comparte
-            // el mismo tipo de retorno) -- este chequeo es solo para que
-            // TypeScript angoste el tipo y no exista en runtime otro camino.
-            if (!resultado.success) return;
+            if (!resultado.success) {
+                // La imagen no es un comprobante válido (captura de web, cotización, etc.)
+                if ((resultado as any).no_es_comprobante) {
+                    await this.enviarMensaje(
+                        chatId,
+                        '🤔 Esta imagen no parece ser un comprobante de pago o factura completada. ' +
+                        'No se registró ningún gasto.\n\n' +
+                        'Si es una factura pendiente de pago, envíala cuando ya esté pagada.',
+                    );
+                }
+                return;
+            }
 
             // Es audio si el propio pipeline lo marcó como tal, sin importar
             // si la persona dijo o no una empresa/n° de factura al hablar.
@@ -166,13 +177,15 @@ export class TelegramService {
                 }
             }
 
-            // Si es audio y no quedó pendiente una corrección de monto (que
-            // ya te va a hacer escribir igual), preguntamos si tiene
-            // comprobante para adjuntar después. Si ya le pedimos corregir
-            // el monto, evitamos bombardear con dos preguntas seguidas: se
-            // pregunta por el comprobante recién cuando responda esa.
+            // Si es audio y no quedó pendiente una corrección de monto,
+            // preguntamos empresa (si tiene acceso a varias) y luego
+            // personal/empresa. Si quedó pendiente la confianza, todo esto
+            // se retoma desde el callback correspondiente.
             if (esAudio && !pidioConfianza) {
-                await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+                const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
+                if (!empresaPendiente) {
+                    await this.manejarTipoAudioConItems(chatId, resultado.gasto_id, resultado.items ?? [], usuario.id);
+                }
             }
 
             // Matching de proveedor/categoría (sección 9 de requerimientos):
@@ -190,27 +203,24 @@ export class TelegramService {
             // false en el caso agrupado (esa confirmación está gateada por
             // el mismo !vinculado_a más arriba), así que no hay riesgo de
             // encimar preguntas.
-            if (!esAudio && resultado.falta_categoria && !pidioConfianza) {
-                // Igual que en preguntarCategoriaSiFalta: si hay más de una
-                // empresa y quien sube la factura es super_admin, se
-                // pregunta la empresa primero (la categoría depende de
-                // ella) y se retoma la pregunta de categoría cuando
-                // responda el botón "empresa:" (ver manejarCallbackQuery).
+            if (!esAudio && !pidioConfianza) {
+                // La empresa se pregunta SIEMPRE para imágenes cuando el usuario
+                // tiene acceso a varias, sin importar si falta categoría o no.
+                // Antes solo se preguntaba cuando falta_categoria=true, por lo
+                // que un proveedor ya conocido (categoría aprendida) registraba
+                // en la empresa por defecto sin preguntar — bug reportado.
                 const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuario.id);
                 if (!empresaPendiente) {
-                    await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                    if (resultado.falta_categoria) {
+                        await this.preguntarCategoria(chatId, resultado.gasto_id, resultado.proveedor_id);
+                    } else if (!resultado.vinculado_a) {
+                        // Proveedor ya conocido con categoría aprendida: solo
+                        // falta preguntar el pedido si la empresa lo usa.
+                        await this.preguntarPedidoSiFalta(chatId, resultado.gasto_id, resultado.pedido_mencionado);
+                    }
                 }
-            } else if (!pidioConfianza && !resultado.vinculado_a) {
-                // RF-11: cuando NO hay que preguntar categoría (proveedor ya
-                // conocido, clasificación aprendida) la cadena
-                // empresa→categoría→tipo→pedido nunca se dispara, así que el
-                // gasto quedaría sin pedido sin haber preguntado. Acá se
-                // cubre ese camino. Se excluyen los casos donde ya hay otra
-                // pregunta abierta (confirmación de confianza o de
-                // agrupación) para no encimar dos botoneras: en el de
-                // confianza, la pregunta se retoma desde el callback
-                // media_ok, igual que ya hace la de categoría.
-                await this.preguntarPedidoSiFalta(chatId, resultado.gasto_id, resultado.pedido_mencionado);
+                // Si empresaPendiente=true: la cadena categoría→tipo→pedido
+                // se retoma desde el callback 'empresa:'.
             }
 
             // La heurística de agrupación (facturas.service.ts) decidió que
@@ -227,6 +237,15 @@ export class TelegramService {
             // antes de dar el gasto por bueno — nunca se borra automático.
             if (resultado.posible_duplicado) {
                 await this.avisarPosibleDuplicado(chatId, resultado.gasto_id, resultado.posible_duplicado);
+            }
+
+            // Si el gasto quedó en dólares y no estamos esperando que el
+            // usuario corrija el monto (confianza baja), guardamos el estado
+            // 'tipo_cambio' para que su próxima respuesta de texto sea
+            // interpretada como el tipo de cambio y el monto se convierta a
+            // soles automáticamente.
+            if (resultado.moneda === 'USD' && !pidioConfianza) {
+                await this.telegramEstado.guardar(Number(chatId), 'tipo_cambio', resultado.gasto_id);
             }
         } catch (err) {
             this.logger.error(`Error procesando update de Telegram (chat ${chatId}): ${err.message}`, err.stack);
@@ -291,6 +310,63 @@ export class TelegramService {
                     { text: '❌ No', callback_data: `comprobante_no:${gastoId}` },
                 ],
             ],
+        });
+    }
+
+    // Detecta items con tipo_gasto en un audio y actúa:
+    // - todos personal → auto-marca el gasto como personal
+    // - mixto → muestra desglose y pide decisión con botones
+    // - sin clasificar → flujo normal (preguntarTipoParaAudio)
+    private async manejarTipoAudioConItems(chatId: number | string, gastoId: number, items: any[], usuarioId: number) {
+        const personales = items.filter((i) => i.tipo_gasto === 'personal');
+        const empresa = items.filter((i) => i.tipo_gasto === 'empresa');
+        const hayPersonal = personales.length > 0;
+        const hayEmpresa = empresa.length > 0;
+
+        if (hayPersonal && !hayEmpresa) {
+            await this.gastosService.actualizar(gastoId, { es_personal: true });
+            await this.enviarMensaje(chatId, '🙋 Detecté que todos los ítems son personales. Guardado como gasto personal.');
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+            return;
+        }
+
+        if (hayPersonal && hayEmpresa) {
+            const sumar = (arr: any[]) => arr.reduce((s, i) => s + (Number(i.costo) || 0), 0);
+            const montoP = sumar(personales);
+            const montoE = sumar(empresa);
+            const fmt = (n: number) => `S/ ${n.toFixed(2)}`;
+            const listP = personales.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
+            const listE = empresa.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
+            const msg = `⚠️ Detecté ítems mezclados:\n\n🙋 <b>Personal</b> — ${fmt(montoP)}\n${listP}\n\n🏢 <b>Empresa</b> — ${fmt(montoE)}\n${listE}\n\n¿Qué hago?`;
+            await this.enviarMensaje(chatId, msg, {
+                inline_keyboard: [
+                    [
+                        { text: '🙋 Todo personal', callback_data: `audio_mix_personal:${gastoId}` },
+                        { text: '🏢 Todo empresa', callback_data: `audio_mix_empresa:${gastoId}` },
+                    ],
+                    [{ text: '✂️ Separar en dos gastos', callback_data: `audio_mix_separar:${gastoId}:${montoP}:${montoE}` }],
+                ],
+            });
+            return;
+        }
+
+        await this.preguntarTipoParaAudio(chatId, gastoId, usuarioId);
+    }
+
+    // Pregunta si el gasto de audio es personal o de empresa, luego comprobante.
+    // Se llama cuando el gasto es de audio y el usuario puede registrar personal.
+    // Si no puede registrar personal, va directo a comprobante.
+    private async preguntarTipoParaAudio(chatId: number | string, gastoId: number, usuarioId: number) {
+        const usuario = await this.usuariosService.obtenerPorId(usuarioId);
+        if (!usuario?.puede_registrar_personal) {
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+            return;
+        }
+        await this.enviarMensaje(chatId, '¿Es un gasto personal o de la empresa?', {
+            inline_keyboard: [[
+                { text: '🙋 Personal', callback_data: `audio_tipo:${gastoId}:personal` },
+                { text: '🏢 Empresa', callback_data: `audio_tipo:${gastoId}:empresa` },
+            ]],
         });
     }
 
@@ -605,7 +681,7 @@ export class TelegramService {
     private async confirmarConfianzaMedia(chatId: number | string, gastoId: number, montoDetectado: number) {
         await this.enviarMensaje(
             chatId,
-            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${montoDetectado}). ¿Está correcto?`,
+            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}). ¿Está correcto?`,
             {
                 inline_keyboard: [
                     [
@@ -621,7 +697,7 @@ export class TelegramService {
         await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId);
         await this.enviarMensaje(
             chatId,
-            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${montoDetectado}, puede estar mal). ` +
+            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}, puede estar mal). ` +
             `¿Cuál es el monto correcto? Respóndeme solo el número, ej: 45.50`,
         );
     }
@@ -637,10 +713,34 @@ export class TelegramService {
 
         await this.gastosService.corregirMonto(gastoId, monto);
         await this.telegramEstado.limpiar(Number(chatId));
-        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto}.`);
+        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto.toFixed(2)}.`);
         await this.preguntarComprobanteSiFalta(chatId, gastoId);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
+    }
+
+    private async manejarTipoCambio(chatId: number | string, gastoId: number, texto: string) {
+        const normalizado = texto.trim().replace(',', '.').replace(/[^\d.]/g, '');
+        const tasa = normalizado ? parseFloat(normalizado) : NaN;
+
+        if (!normalizado || isNaN(tasa) || tasa < 1 || tasa > 20) {
+            await this.enviarMensaje(
+                chatId,
+                '❌ Tipo de cambio no válido. Respóndeme solo el número, ej: 3.80',
+            );
+            return;
+        }
+
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        const montoUSD = Number(gasto.monto);
+        const montoPEN = Math.round(montoUSD * tasa * 100) / 100;
+
+        await this.gastosService.corregirMonto(gastoId, montoPEN);
+        await this.telegramEstado.limpiar(Number(chatId));
+        await this.enviarMensaje(
+            chatId,
+            `✅ Convertido: $${montoUSD.toFixed(2)} × ${tasa} = S/ ${montoPEN.toFixed(2)}`,
+        );
     }
 
     // --- Flujo 2: comando /gastos -> lista con botón "Agregar comprobante" ---
@@ -705,7 +805,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'empresa', 'pedido', 'pedido_lista'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -788,7 +888,59 @@ export class TelegramService {
                 return;
             }
 
-            // Respondió a "¿A qué empresa pertenece este gasto?" (Paso 32).
+            // Respondido "¿Personal o empresa?" para un gasto de audio.
+            if (accion === 'audio_tipo') {
+                const esPersonal = segundoIdStr === 'personal';
+                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                await this.enviarMensaje(
+                    chatId,
+                    esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Ítems mixtos: usuario eligió "todo personal" o "todo empresa".
+            if (accion === 'audio_mix_personal' || accion === 'audio_mix_empresa') {
+                const esPersonal = accion === 'audio_mix_personal';
+                await this.gastosService.actualizar(gastoId, { es_personal: esPersonal });
+                await this.enviarMensaje(
+                    chatId,
+                    esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Ítems mixtos: usuario eligió separar en dos gastos.
+            if (accion === 'audio_mix_separar') {
+                const [, , montoPStr, montoEStr] = data.split(':');
+                const montoPersonal = parseFloat(montoPStr) || 0;
+                const montoEmpresa = parseFloat(montoEStr) || 0;
+                const gastoOriginal = await this.gastosService.obtenerPorId(gastoId);
+                // Gasto original pasa a ser el de empresa.
+                await this.gastosService.actualizar(gastoId, { es_personal: false, monto: montoEmpresa });
+                // Nuevo gasto para la parte personal.
+                if (montoPersonal > 0) {
+                    await this.gastosService.crear({
+                        usuario_id: usuario.id,
+                        empresa_id: gastoOriginal.empresa_id,
+                        descripcion: gastoOriginal.descripcion,
+                        monto: montoPersonal,
+                        fecha: gastoOriginal.fecha,
+                        es_personal: true,
+                        confianza: 'alta',
+                    });
+                }
+                await this.enviarMensaje(
+                    chatId,
+                    `✂️ Separado.\n🏢 Empresa: S/ ${montoEmpresa.toFixed(2)}\n🙋 Personal: S/ ${montoPersonal.toFixed(2)}`,
+                );
+                await this.preguntarSiTieneComprobante(chatId, gastoId);
+                return;
+            }
+
+            // Respondió a "¿A qué empresa pertenece este gasto?" (Paso 32/33).
             // Se corrige el gasto (se había creado con la empresa por
             // defecto) y recién ahí se retoma la pregunta de categoría, que
             // depende de la empresa correcta.
@@ -797,7 +949,18 @@ export class TelegramService {
                 await this.gastosService.actualizarEmpresa(gastoId, empresaId);
                 const gasto = await this.gastosService.obtenerPorId(gastoId);
                 if (!gasto.categoria_id) {
-                    await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id ?? null);
+                    if (gasto.proveedor_id) {
+                        // Imagen con proveedor nuevo: preguntar categoría.
+                        await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id);
+                    } else {
+                        // Audio (o imagen sin proveedor): saltar categoría y
+                        // preguntar si es personal o de empresa.
+                        await this.preguntarTipoParaAudio(chatId, gastoId, usuario.id);
+                    }
+                } else {
+                    // Proveedor ya conocido con categoría aprendida: la empresa
+                    // es lo único que faltaba → ir directo a pedido.
+                    await this.preguntarPedidoSiFalta(chatId, gastoId);
                 }
                 return;
             }
@@ -1019,11 +1182,18 @@ export class TelegramService {
         const esc = (t: any) =>
             String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+        const moneda: 'PEN' | 'USD' = resultado.moneda === 'USD' ? 'USD' : 'PEN';
+        const simbolo = moneda === 'USD' ? '$' : 'S/';
+        const fmt = (n: number | null | undefined) =>
+            n != null ? `${simbolo} ${Number(n).toFixed(2)}` : null;
+
         const items = Array.isArray(resultado.items) ? resultado.items : [];
         const lineas = items.map((item: any) => {
-            const cant = item.cantidad > 0 ? `${item.cantidad} x ` : '';
-            const costo = item.costo != null ? item.costo : '-';
-            return `• ${esc(cant)}${esc(item.producto)}  —  ${esc(costo)}`;
+            const pu = item.precio_unitario != null && item.precio_unitario > 0 ? fmt(item.precio_unitario) : null;
+            const cant = item.cantidad > 0 ? `${item.cantidad}` : '';
+            const costo = item.costo > 0 ? fmt(item.costo) : (item.costo == null ? '-' : '?');
+            const detalle = cant && pu ? `${cant} × ${pu}` : cant ? `${cant} ×` : '';
+            return `• ${esc(item.producto)}${detalle ? '  ' + detalle : ''}  —  ${esc(costo)}`;
         });
 
         // Tres casos posibles: factura real (con comprobante en BD), captura
@@ -1051,11 +1221,16 @@ export class TelegramService {
             msg = '💬 <b>Gasto registrado</b> (sin comprobante)\n\n';
         }
         if (resultado.fecha) msg += `📅 <b>Fecha:</b> ${esc(resultado.fecha)}\n`;
+        if (moneda === 'USD') msg += `💱 <b>Moneda:</b> Dólares (USD)\n`;
         if (lineas.length) msg += `\n<b>Productos:</b>\n${lineas.join('\n')}`;
 
-        if (resultado.subtotal != null) msg += `\n\n💵 <b>Sub Total:</b> ${resultado.subtotal}`;
-        if (resultado.igv != null) msg += `\n📊 <b>IGV:</b> ${resultado.igv}`;
-        if (resultado.total != null) msg += `\n💰 <b>Total:</b> ${resultado.total}`;
+        if (resultado.subtotal != null) msg += `\n\n💵 <b>Sub Total:</b> ${fmt(resultado.subtotal)}`;
+        if (resultado.igv != null) msg += `\n📊 <b>IGV:</b> ${fmt(resultado.igv)}`;
+        if (resultado.total != null) msg += `\n💰 <b>Total:</b> ${fmt(resultado.total)}`;
+
+        if (moneda === 'USD') {
+            msg += `\n\n⚠️ <i>El gasto está en dólares ($). Responde con el tipo de cambio para convertirlo a soles (ej: 3.80).</i>`;
+        }
 
         return msg;
     }

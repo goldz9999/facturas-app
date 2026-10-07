@@ -59,11 +59,13 @@ export interface FacturaNormalizada {
     medio_pago: MedioPago | null;
     numero_operacion: string;
     confianza: NivelConfianza;
+    moneda: 'PEN' | 'USD';
+    es_documento_valido: boolean;
     // RF-11: nombre de pedido que la persona mencionó en un audio/texto
     // libre ("para el pedido Dragon"). Cadena vacía si no mencionó ninguno.
     // NO es un id: el backend lo resuelve contra `pedidos` de la empresa.
     pedido_mencionado: string;
-    items: Array<{ producto: string; cantidad: number; costo: number }>;
+    items: Array<{ producto: string; cantidad: number; costo: number; precio_unitario: number | null; tipo_gasto?: 'personal' | 'empresa' }>;
 }
 
 // Equivalente a "Separar articulos1" + "Extraer ID Factura1" en n8n
@@ -90,10 +92,15 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
                 costo = !isNaN(c) && !isNaN(u) ? c * u : null;
             }
 
+            const precioUnitario = art.PrecioUnitario != null ? Number(art.PrecioUnitario) || null : null;
+            const tipoGasto: 'personal' | 'empresa' | undefined =
+                art.TipoGasto === 'personal' ? 'personal' : art.TipoGasto === 'empresa' ? 'empresa' : undefined;
             return {
                 producto: art.Descripcion || '',
                 cantidad: cantidad || 0,
                 costo: Number(costo) || 0,
+                precio_unitario: precioUnitario,
+                tipo_gasto: tipoGasto,
             };
         });
 
@@ -102,6 +109,12 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
     // si nada: forzamos confianza "baja" para que el gasto caiga en la
     // bandeja de Revisión en vez de guardarse con una fecha inventada.
     const confianza = fechaValida ? normalizarConfianza(data.Confianza) : 'baja';
+
+    const monedaRaw = String(data.Moneda ?? '').trim().toUpperCase();
+    const moneda: 'PEN' | 'USD' = monedaRaw === 'USD' ? 'USD' : 'PEN';
+    // EsDocumentoValido: default true (dar beneficio de la duda para audios
+    // y texto libre donde este campo no se envía, y para retrocompatibilidad).
+    const es_documento_valido = data.EsDocumentoValido !== false;
 
     return {
         fecha,
@@ -114,6 +127,8 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
         medio_pago: normalizarMedioPago(data.MedioPago),
         numero_operacion: data.NumeroOperacion != null ? String(data.NumeroOperacion).trim() : '',
         confianza,
+        moneda,
+        es_documento_valido,
         pedido_mencionado: data.PedidoMencionado != null ? String(data.PedidoMencionado).trim() : '',
         items,
     };

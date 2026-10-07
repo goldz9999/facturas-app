@@ -378,7 +378,38 @@ Si el documento corresponde a Yape:
 Nunca uses "alta" simplemente porque el documento parece legible.
 
 ==================================================
-16. REGLA ESPECIAL CONTRA INVENCIONES
+16. MONEDA
+==================================================
+
+"Moneda" indica la moneda del comprobante.
+
+* Si el comprobante muestra S/, PEN, soles o similar → "PEN"
+* Si muestra $, USD, dólares o similar → "USD"
+* Si no puede determinarse: "PEN" (asume soles por defecto)
+
+==================================================
+17. ES DOCUMENTO VÁLIDO
+==================================================
+
+"EsDocumentoValido" es true SOLO cuando el texto/imagen corresponde a:
+
+* Una factura o boleta emitida (ya pagada o al momento del pago)
+* Un comprobante de pago (Yape, transferencia, POS)
+* Un ticket de caja o recibo de pago completado
+
+Es false cuando el texto/imagen es:
+
+* Una captura de pantalla de una web o app (que no sea el recibo final del pago)
+* Una cotización, proforma o presupuesto
+* Un estado de cuenta o resumen de movimientos
+* Una notificación de cobro pendiente (factura pendiente de pago)
+* Un correo electrónico, chat o conversación
+* Cualquier otro documento que NO sea evidencia de un pago ya realizado o una compra concretada
+
+Si no puede determinarse con certeza: true (dar el beneficio de la duda).
+
+==================================================
+18. REGLA ESPECIAL CONTRA INVENCIONES
 ==================================================
 
 Antes de devolver el JSON, verifica mentalmente cada campo:
@@ -393,7 +424,7 @@ Si la respuesta es NO:
 No inventes valores para completar el esquema.
 
 ==================================================
-17. FORMATO DE RESPUESTA
+19. FORMATO DE RESPUESTA
 ==================================================
 
 Devuelve ÚNICAMENTE JSON válido, siempre en español.
@@ -426,6 +457,8 @@ El JSON debe cumplir exactamente esta estructura:
 "Total": "number|null",
 "MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
 "NumeroOperacion": "string",
+"Moneda": "PEN|USD",
+"EsDocumentoValido": true,
 "Confianza": "alta|media|baja"
 }`;
 
@@ -467,6 +500,22 @@ Debe producir:
 
 No agregues productos que la persona no mencione.
 
+==================================================
+1.1. TIPO DE GASTO POR ARTÍCULO
+==================================================
+
+Si la persona indica explícitamente que un artículo es personal o de empresa, añade "TipoGasto".
+
+Señales de gasto personal: "para mí", "para casa", "personal", "para mi familia", "esto no es del trabajo".
+Señales de gasto de empresa: "para el trabajo", "para la empresa", "para el negocio", "material de oficina".
+
+Si la persona NO aclara el tipo de un artículo, omite el campo TipoGasto de ese artículo.
+
+Ejemplo:
+"Compré resmas de papel para la oficina y una agenda para mí"
+→ Resmas de papel: TipoGasto: "empresa"
+→ Agenda: TipoGasto: "personal"
+
 Si la persona describe solamente un gasto general:
 
 "gasté 50 soles en gasolina"
@@ -496,6 +545,10 @@ Peso o volumen:
 
 No conviertas kg, gramos, litros o ml en Cantidad.
 
+ATENCIÓN: "centimos" es dinero (precio), no es una unidad de peso ni volumen.
+"50 centimos de rocoto" → NO añadas "(50 cm)" a la descripción; es el precio del artículo.
+→ Descripcion: "Rocoto molido", Importe: 0.50
+
 Si la cantidad no fue mencionada:
 null
 
@@ -507,17 +560,38 @@ Nunca asumas cantidad = 1.
 
 Extrae los precios únicamente cuando la persona los haya mencionado.
 
+MONTOS EN CENTIMOS:
+"50 centimos", "cincuenta centimos" → 0.50
+"un sol cincuenta" → 1.50
+"dos soles con ochenta" → 2.80
+
+IMPORTANTE: "centimos" es dinero (céntimos de sol), NO es centímetros (cm).
+No pongas "50 cm" ni "(50 cm)" en la descripción cuando la persona dice precio.
+
 PrecioUnitario:
-Solo úsalo cuando la persona indique claramente un precio por unidad.
+Solo úsalo cuando la persona indique claramente un precio por unidad discreta (pieza, botella, bolsa, etc.).
 
 Ejemplo:
 "compré 3 gaseosas a 4 soles cada una"
+→ Cantidad = 3, PrecioUnitario = 4
 
-Cantidad = 3
-PrecioUnitario = 4
+PRECIO POR PESO (kg, gramos, litros):
+Cuando la persona dice "X kg a Y soles el kilo" (o "por kilo", "el kilo", "el litro"):
+→ PrecioUnitario: null (no aplica a peso)
+→ Calcula e incluye el Importe = X × Y
+
+Ejemplo:
+"3 kilos de plátano a 2 soles el kilo"
+→ Descripcion: "Plátano (3 kg)", Cantidad: null, PrecioUnitario: null, Importe: 6
+
+Ejemplo:
+"medio kilo de queso a 20 soles el kilo"
+→ Descripcion: "Queso (0.5 kg)", Cantidad: null, PrecioUnitario: null, Importe: 10
 
 Importe:
 Usa el monto que la persona indique como pagado para ese artículo o gasto.
+Si el monto viene expresado solo en centimos, conviértelo a soles:
+"50 centimos de rocoto" → Descripcion: "Rocoto molido", Importe: 0.50
 
 No calcules un precio unitario a partir del importe.
 
@@ -725,7 +799,8 @@ Estructura:
 "Descripcion": "string",
 "Cantidad": "number|null",
 "PrecioUnitario": "number|null",
-"Importe": "number|null"
+"Importe": "number|null",
+"TipoGasto": "personal|empresa|omitir si no se mencionó"
 }
 ],
 "SubTotal": "number|null",
@@ -734,6 +809,7 @@ Estructura:
 "MedioPago": "yape|transferencia|efectivo|tarjeta|otro|",
 "NumeroOperacion": "string",
 "PedidoMencionado": "string",
+"Moneda": "PEN|USD",
 "Confianza": "alta|media|baja"
 }`;
 
@@ -747,6 +823,7 @@ export interface FacturaExtraida {
         Cantidad?: number | null;
         PrecioUnitario?: number | null;
         Importe?: number | null;
+        TipoGasto?: 'personal' | 'empresa';
     }>;
     SubTotal?: number | null;
     IGV?: number | null;
@@ -758,6 +835,8 @@ export interface FacturaExtraida {
     // libre: el backend lo resuelve contra `pedidos` de la empresa y nunca
     // lo acepta como id (ver PedidosService.buscarPorNombre).
     PedidoMencionado?: string;
+    Moneda?: string;
+    EsDocumentoValido?: boolean;
     Confianza?: string;
 }
 
