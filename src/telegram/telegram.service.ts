@@ -747,11 +747,17 @@ export class TelegramService {
     }
 
     private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number, items?: any[]) {
+        const montoFmt = Number(montoDetectado).toFixed(2);
         await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId, { items: items ?? [] });
         await this.enviarMensaje(
             chatId,
-            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}, puede estar mal). ` +
-            `¿Cuál es el monto correcto? Respóndeme solo el número, ej: 45.50`,
+            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${montoFmt}, puede estar mal). ` +
+            `¿Cuál es el monto correcto?`,
+            {
+                inline_keyboard: [
+                    [{ text: `✅ S/ ${montoFmt} (está bien)`, callback_data: `monto_ok:${gastoId}:${montoFmt}` }],
+                ],
+            },
         );
     }
 
@@ -1129,6 +1135,15 @@ export class TelegramService {
             // Gemini había leído y muestra la lista completa.
             if (accion === 'pedido_lista') {
                 await this.mostrarListaDePedidos(chatId, gastoId);
+                return;
+            }
+
+            // Confirmó que el monto detectado es correcto (botón "✅ S/ X.XX está bien").
+            if (accion === 'monto_ok') {
+                const [, , montoStr] = data.split(':');
+                const estado = await this.telegramEstado.obtener(Number(chatId));
+                const items = (estado?.meta as any)?.items ?? [];
+                await this.manejarCorreccionMonto(chatId, gastoId, montoStr, items);
                 return;
             }
 
