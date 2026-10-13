@@ -428,7 +428,7 @@ export class TelegramService {
         if (!usuario) return false;
 
         const empresas =
-            ['super_admin', 'admin'].includes(usuario.rol)
+            (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
                 ? await this.empresasService.listar()
                 : (await Promise.all(usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)))).filter(
                     (e): e is NonNullable<typeof e> => e != null,
@@ -975,9 +975,11 @@ export class TelegramService {
                     await this.preguntarSiTieneComprobante(chatId, gastoId);
                     return;
                 }
-                // Empresa: mostrar lista de empresas en 2 columnas.
+                // Empresa: marcar es_personal=false (para que cat: sepa que no debe preguntar de nuevo)
+                // y mostrar lista de empresas en 2 columnas.
+                await this.gastosService.actualizar(gastoId, { es_personal: false });
                 const empresasDisp =
-                    usuario.rol === 'super_admin'
+                    (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
                         ? await this.empresasService.listar()
                         : (await Promise.all(
                             usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)),
@@ -1135,11 +1137,13 @@ export class TelegramService {
             if (accion === 'cat') {
                 const [, , proveedorIdStr, categoriaIdStr] = data.split(':');
                 const categoriaId = Number(categoriaIdStr);
-                if (categoriaId === 0) {
-                    // Usuario eligió "Sin categoría": saltar directo a tipo de gasto.
-                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), 0, usuario.id);
+                const proveedorId = Number(proveedorIdStr);
+                const gastoParaCat = await this.gastosService.obtenerPorId(gastoId);
+                if (gastoParaCat.es_personal != null) {
+                    // Personal/empresa ya respondido vía gasto_tipo: saltar pregunta duplicada.
+                    await this.finalizarClasificacion(chatId, gastoId, proveedorId, categoriaId, gastoParaCat.es_personal);
                 } else {
-                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), categoriaId, usuario.id);
+                    await this.preguntarTipoGasto(chatId, gastoId, proveedorId, categoriaId, usuario.id);
                 }
                 return;
             }
