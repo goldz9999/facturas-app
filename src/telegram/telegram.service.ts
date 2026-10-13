@@ -428,7 +428,7 @@ export class TelegramService {
         if (!usuario) return false;
 
         const empresas =
-            ['super_admin', 'admin'].includes(usuario.rol)
+            (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
                 ? await this.empresasService.listar()
                 : (await Promise.all(usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)))).filter(
                     (e): e is NonNullable<typeof e> => e != null,
@@ -943,6 +943,41 @@ export class TelegramService {
                 return;
             }
 
+            // Respondió a "¿Personal o de empresa?" (preguntarEmpresaSiFalta, nuevo flujo).
+            // Si dijo personal: marcar y preguntar comprobante.
+            // Si dijo empresa: mostrar lista de empresas (2 columnas).
+            if (accion === 'gasto_tipo') {
+                const esPersonal = segundoIdStr === 'personal';
+                if (esPersonal) {
+                    await this.gastosService.actualizar(gastoId, { es_personal: true });
+                    await this.enviarMensaje(chatId, '🙋 Guardado como gasto personal.');
+                    await this.preguntarSiTieneComprobante(chatId, gastoId);
+                    return;
+                }
+                // Empresa: marcar es_personal=false (para que cat: sepa que no debe preguntar de nuevo)
+                // y mostrar lista de empresas en 2 columnas.
+                await this.gastosService.actualizar(gastoId, { es_personal: false });
+                const empresasDisp =
+                    (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
+                        ? await this.empresasService.listar()
+                        : (await Promise.all(
+                            usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)),
+                          )).filter((e): e is NonNullable<typeof e> => e != null);
+                const filasEmp: Array<Array<{ text: string; callback_data: string }>> = [];
+                for (let i = 0; i < empresasDisp.length; i += 2) {
+                    filasEmp.push(
+                        empresasDisp.slice(i, i + 2).map((emp) => ({
+                            text: emp.nombre,
+                            callback_data: `empresa:${gastoId}:${emp.id}`,
+                        })),
+                    );
+                }
+                await this.enviarMensaje(chatId, '🏢 ¿A qué empresa pertenece este gasto?', {
+                    inline_keyboard: filasEmp,
+                });
+                return;
+            }
+
             // Ítems mixtos: usuario eligió "todo personal" o "todo empresa".
             if (accion === 'audio_mix_personal' || accion === 'audio_mix_empresa') {
                 const esPersonal = accion === 'audio_mix_personal';
@@ -1081,11 +1116,13 @@ export class TelegramService {
             if (accion === 'cat') {
                 const [, , proveedorIdStr, categoriaIdStr] = data.split(':');
                 const categoriaId = Number(categoriaIdStr);
-                if (categoriaId === 0) {
-                    // Usuario eligió "Sin categoría": saltar directo a tipo de gasto.
-                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), 0, usuario.id);
+                const proveedorId = Number(proveedorIdStr);
+                const gastoParaCat = await this.gastosService.obtenerPorId(gastoId);
+                if (gastoParaCat.es_personal != null) {
+                    // Personal/empresa ya respondido vía gasto_tipo: saltar pregunta duplicada.
+                    await this.finalizarClasificacion(chatId, gastoId, proveedorId, categoriaId, gastoParaCat.es_personal);
                 } else {
-                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), categoriaId, usuario.id);
+                    await this.preguntarTipoGasto(chatId, gastoId, proveedorId, categoriaId, usuario.id);
                 }
                 return;
             }
