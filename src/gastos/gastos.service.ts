@@ -845,6 +845,7 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error actualizando la categoría: ${error.message}`);
         }
+        this.gateway.notificarCambio(gasto.empresa_id, gastoId, 'actualizado');
         return gasto;
     }
 
@@ -876,6 +877,7 @@ export class GastosService {
         if (error) {
             throw new InternalServerErrorException(`Error actualizando la empresa del gasto: ${error.message}`);
         }
+        this.gateway.notificarCambio(empresaId, gastoId, 'actualizado');
         return gasto;
     }
 
