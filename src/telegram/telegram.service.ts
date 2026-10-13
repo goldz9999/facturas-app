@@ -817,7 +817,7 @@ export class TelegramService {
             const desc = gasto.descripcion || '(sin descripción)';
             const linea =
                 `📌 <b>${desc}</b>\n💰 ${gasto.monto}  ·  📅 ${gasto.fecha}` +
-                (tieneComprobante ? '\n🧾 Ya tiene comprobante' : '\n💬 Sin comprobante');
+                (tieneComprobante ? '\n🧧 Ya tiene comprobante' : '\n💬 Sin comprobante');
 
             await this.enviarMensaje(
                 chatId,
@@ -1201,7 +1201,7 @@ export class TelegramService {
         const { factura } = await this.facturasService.adjuntarComprobanteAGasto(gastoId, archivo);
         await this.enviarMensaje(
             chatId,
-            `🧾 <b>Comprobante adjuntado</b>\n\n` +
+            `🧧 <b>Comprobante adjuntado</b>\n\n` +
             (factura.empresa ? `🏢 <b>Empresa:</b> ${factura.empresa}\n` : '') +
             (factura.n_factura ? `🔢 <b>N° Factura:</b> ${factura.n_factura}\n` : '') +
             `💰 <b>Total:</b> ${factura.total_factura ?? '-'}`,
@@ -1350,7 +1350,7 @@ export class TelegramService {
 
         let msg: string;
         if (resultado.parece_factura) {
-            msg = '🧾 <b>Factura registrada</b>\n\n';
+            msg = '🧧 <b>Factura registrada</b>\n\n';
             if (resultado.empresa) msg += `🏢 <b>Empresa:</b> ${esc(resultado.empresa)}\n`;
             if (resultado.n_factura) msg += `🔢 <b>N° Factura:</b> ${esc(resultado.n_factura)}\n`;
         } else if (resultado.medio_pago) {
