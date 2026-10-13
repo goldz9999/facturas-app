@@ -428,7 +428,7 @@ export class TelegramService {
         if (!usuario) return false;
 
         const empresas =
-            usuario.rol === 'super_admin'
+            ['super_admin', 'admin'].includes(usuario.rol)
                 ? await this.empresasService.listar()
                 : (await Promise.all(usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)))).filter(
                     (e): e is NonNullable<typeof e> => e != null,
