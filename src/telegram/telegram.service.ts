@@ -476,7 +476,9 @@ export class TelegramService {
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         const categorias = await this.categoriasService.listar(gasto.empresa_id);
         if (categorias.length === 0) {
-            await this.preguntarPedidoSiFalta(chatId, gastoId);
+            // Sin categorías: guardar como "Sin categoría" directamente y continuar.
+            const esPersonal = gasto.es_personal ?? false;
+            await this.finalizarClasificacion(chatId, gastoId, proveedorId, 0, esPersonal);
             return;
         }
 
