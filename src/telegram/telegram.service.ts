@@ -435,9 +435,27 @@ export class TelegramService {
                 );
         if (empresas.length <= 1) return false;
 
-        const filas = empresas.map((emp) => [
-            { text: emp.nombre, callback_data: `empresa:${gastoId}:${emp.id}` },
-        ]);
+        // Si puede registrar gastos personales, preguntar primero si es personal o de empresa.
+        if (usuario.puede_registrar_personal) {
+            await this.enviarMensaje(chatId, '¿Este gasto es personal o de empresa?', {
+                inline_keyboard: [[
+                    { text: '🙋 Personal', callback_data: `gasto_tipo:${gastoId}:personal` },
+                    { text: '🏢 Empresa', callback_data: `gasto_tipo:${gastoId}:empresa` },
+                ]],
+            });
+            return true;
+        }
+
+        // No puede registrar personal: mostrar lista de empresas directamente (2 columnas).
+        const filas: Array<Array<{ text: string; callback_data: string }>> = [];
+        for (let i = 0; i < empresas.length; i += 2) {
+            filas.push(
+                empresas.slice(i, i + 2).map((emp) => ({
+                    text: emp.nombre,
+                    callback_data: `empresa:${gastoId}:${emp.id}`,
+                })),
+            );
+        }
         await this.enviarMensaje(chatId, '🏢 ¿A qué empresa pertenece este gasto?', {
             inline_keyboard: filas,
         });
@@ -457,7 +475,10 @@ export class TelegramService {
         if (!proveedorId) return; // sin nombre de empresa detectado, no hay a quién ligar la sugerencia
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         const categorias = await this.categoriasService.listar(gasto.empresa_id);
-        if (categorias.length === 0) return;
+        if (categorias.length === 0) {
+            await this.preguntarPedidoSiFalta(chatId, gastoId);
+            return;
+        }
 
         const filas: Array<Array<{ text: string; callback_data: string }>> = [];
         for (let i = 0; i < categorias.length; i += 2) {
@@ -844,7 +865,7 @@ export class TelegramService {
             // que el gasto le pertenezca al usuario que apretó el botón,
             // para que nadie pueda confirmar/corregir/adjuntar cosas sobre
             // un gasto ajeno mandando un callback_data armado a mano.
-            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar', 'item_tipo'];
+            const accionesSobreGasto = ['comprobante_si', 'agregar_comprobante', 'media_ok', 'media_no', 'dup_si', 'dup_no', 'cat', 'tipo', 'audio_tipo', 'gasto_tipo', 'empresa', 'pedido', 'pedido_lista', 'audio_mix_personal', 'audio_mix_empresa', 'audio_mix_separar', 'item_tipo'];
             if (accionesSobreGasto.includes(accion)) {
                 if (!gastoId || !(await this.esDuenoDelGasto(gastoId, usuario.id))) {
                     await this.enviarMensaje(chatId, '🚫 Ese gasto no te pertenece.');
@@ -1072,9 +1093,9 @@ export class TelegramService {
                         // Imagen con proveedor nuevo: preguntar categoría.
                         await this.preguntarCategoria(chatId, gastoId, gasto.proveedor_id);
                     } else {
-                        // Audio (o imagen sin proveedor): saltar categoría y
-                        // preguntar si es personal o de empresa.
-                        await this.preguntarTipoParaAudio(chatId, gastoId, usuario.id);
+                        // Audio sin proveedor: el tipo personal/empresa ya se
+                        // preguntó antes de mostrar la lista de empresas.
+                        await this.preguntarSiTieneComprobante(chatId, gastoId);
                     }
                 } else {
                     // Proveedor ya conocido con categoría aprendida: la empresa

@@ -25,10 +25,12 @@ export class EmpresasController {
     // super_admin, que usa listar() de arriba). Cualquier rol autenticado
     // puede llamarlo -- cada quien solo ve las suyas, resueltas desde su
     // propio JWT, nunca de un query param.
+    // El propietario es dueño de toda la organización, por lo que siempre
+    // ve todas las empresas, igual que super_admin.
     @Get('mias')
     @Roles('super_admin', 'admin', 'empleado')
     async mias(@Request() req) {
-        if (req.user.rol === 'super_admin') {
+        if (req.user.rol === 'super_admin' || req.user.rol_empresa === 'propietario') {
             return this.empresasService.listar();
         }
         const ids: number[] = req.user.empresa_ids ?? [];
