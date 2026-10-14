@@ -978,7 +978,7 @@ export class TelegramService {
             if (accion === 'gasto_tipo') {
                 const esPersonal = segundoIdStr === 'personal';
                 if (esPersonal) {
-                    await this.gastosService.actualizar(gastoId, { es_personal: true });
+                    await this.gastosService.marcarComoPersonal(gastoId);
                     await this.enviarMensaje(chatId, '🙋 Guardado como gasto personal.');
                     await this.preguntarSiTieneComprobante(chatId, gastoId);
                     return;
@@ -991,7 +991,7 @@ export class TelegramService {
                         ? await this.empresasService.listar()
                         : (await Promise.all(
                             usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)),
-                          )).filter((e): e is NonNullable<typeof e> => e != null);
+                        )).filter((e): e is NonNullable<typeof e> => e != null);
                 const filasEmp: Array<Array<{ text: string; callback_data: string }>> = [];
                 for (let i = 0; i < empresasDisp.length; i += 2) {
                     filasEmp.push(
