@@ -934,7 +934,10 @@ export class GastosService {
         // -- nunca las de una empresa fuera de su lista. super_admin sin
         // filtro (empresaId undefined) ve de todas las empresas que
         // existen, igual que antes.
-        query = aplicarFiltroEmpresa(query, empresaId);
+        // Los gastos personales tienen empresa_id = NULL; aplicar el filtro de
+        // empresa los excluiría aunque sean del usuario correcto. El acceso
+        // está garantizado por usuarioId (que siempre viene con esPersonal).
+        if (!filtros.esPersonal) query = aplicarFiltroEmpresa(query, empresaId);
 
         if (filtros.desde) query = query.gte('fecha', filtros.desde);
         if (filtros.hasta) query = query.lte('fecha', filtros.hasta);
@@ -1039,7 +1042,7 @@ export class GastosService {
             // Mismo criterio que listar(): un duplicado ya confirmado no debe
             // sumarse dos veces a los totales del Dashboard.
             .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
-        queryMes = soloPersonal(aplicarFiltroEmpresa(queryMes, empresaId));
+        queryMes = soloPersonal(personalDe !== undefined ? queryMes : aplicarFiltroEmpresa(queryMes, empresaId));
 
         const { data: gastosMes, error: errorMes } = await queryMes;
         if (errorMes) {
@@ -1095,7 +1098,7 @@ export class GastosService {
             .select('monto, fecha')
             .gte('fecha', inicioVentanaStr)
             .or('posible_duplicado_de.is.null,pendiente_revision.eq.true');
-        queryVentana = soloPersonal(aplicarFiltroEmpresa(queryVentana, empresaId));
+        queryVentana = soloPersonal(personalDe !== undefined ? queryVentana : aplicarFiltroEmpresa(queryVentana, empresaId));
 
         const { data: gastosVentana, error: errorVentana } = await queryVentana;
         if (errorVentana) {
@@ -1136,7 +1139,7 @@ export class GastosService {
         let query = client
             .from('gastos')
             .select('id, es_personal, pendiente_revision, posible_duplicado_de, comprobantes(id)');
-        query = aplicarFiltroEmpresa(query, empresaId);
+        if (personalDe === undefined) query = aplicarFiltroEmpresa(query, empresaId);
         if (personalDe !== undefined) query = query.eq('es_personal', true).eq('usuario_id', personalDe);
 
         const { data, error } = await query;

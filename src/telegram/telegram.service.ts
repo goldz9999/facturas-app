@@ -428,7 +428,7 @@ export class TelegramService {
         if (!usuario) return false;
 
         const empresas =
-            (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
+            ['super_admin', 'admin'].includes(usuario.rol)
                 ? await this.empresasService.listar()
                 : (await Promise.all(usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)))).filter(
                     (e): e is NonNullable<typeof e> => e != null,
@@ -476,9 +476,7 @@ export class TelegramService {
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         const categorias = await this.categoriasService.listar(gasto.empresa_id);
         if (categorias.length === 0) {
-            // Sin categorías: guardar como "Sin categoría" directamente y continuar.
-            const esPersonal = gasto.es_personal ?? false;
-            await this.finalizarClasificacion(chatId, gastoId, proveedorId, 0, esPersonal);
+            await this.preguntarPedidoSiFalta(chatId, gastoId);
             return;
         }
 
@@ -983,11 +981,9 @@ export class TelegramService {
                     await this.preguntarSiTieneComprobante(chatId, gastoId);
                     return;
                 }
-                // Empresa: marcar es_personal=false (para que cat: sepa que no debe preguntar de nuevo)
-                // y mostrar lista de empresas en 2 columnas.
-                await this.gastosService.actualizar(gastoId, { es_personal: false });
+                // Empresa: mostrar lista de empresas en 2 columnas.
                 const empresasDisp =
-                    (['super_admin', 'admin'].includes(usuario.rol) || usuario.empresas.some((e) => e.rol === 'propietario'))
+                    usuario.rol === 'super_admin'
                         ? await this.empresasService.listar()
                         : (await Promise.all(
                             usuario.empresa_ids.map((id) => this.empresasService.obtenerPorId(id)),
@@ -1154,13 +1150,11 @@ export class TelegramService {
             if (accion === 'cat') {
                 const [, , proveedorIdStr, categoriaIdStr] = data.split(':');
                 const categoriaId = Number(categoriaIdStr);
-                const proveedorId = Number(proveedorIdStr);
-                const gastoParaCat = await this.gastosService.obtenerPorId(gastoId);
-                if (gastoParaCat.es_personal != null) {
-                    // Personal/empresa ya respondido vía gasto_tipo: saltar pregunta duplicada.
-                    await this.finalizarClasificacion(chatId, gastoId, proveedorId, categoriaId, gastoParaCat.es_personal);
+                if (categoriaId === 0) {
+                    // Usuario eligió "Sin categoría": saltar directo a tipo de gasto.
+                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), 0, usuario.id);
                 } else {
-                    await this.preguntarTipoGasto(chatId, gastoId, proveedorId, categoriaId, usuario.id);
+                    await this.preguntarTipoGasto(chatId, gastoId, Number(proveedorIdStr), categoriaId, usuario.id);
                 }
                 return;
             }
