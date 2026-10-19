@@ -532,7 +532,7 @@ export class FacturasService {
             const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
               usuarioId,
               montoDetectado,
-              factura.fecha,
+              factura.fecha ?? '',
               datosComprobante.numero,
               proveedorId,
               factura.ruc || null,

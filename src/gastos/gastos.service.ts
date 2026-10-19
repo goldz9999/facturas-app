@@ -130,7 +130,7 @@ export interface CrearGastoParams {
     empresa_id?: number | null;
     descripcion?: string | null;
     monto: number;
-    fecha: string; // YYYY-MM-DD
+    fecha: string | null; // YYYY-MM-DD, null cuando Gemini no pudo leer la fecha
     es_personal?: boolean;
     categoria_id?: number | null;
     proveedor_id?: number | null;
@@ -193,7 +193,7 @@ export class GastosService {
                 monto: params.monto,
                 fecha: params.fecha,
                 confianza: params.confianza ?? null,
-                pendiente_revision: params.confianza === 'media' || params.confianza === 'baja',
+                pendiente_revision: params.confianza === 'media' || params.confianza === 'baja' || params.fecha == null,
             })
             .select('*')
             .single();
