@@ -50,6 +50,10 @@ function normalizarConfianza(c?: string | null): NivelConfianza {
 
 export interface FacturaNormalizada {
     fecha: string;
+    // B1: true cuando Gemini no pudo leer la fecha del documento.
+    // La fecha guardada en DB es la de hoy como placeholder; Telegram
+    // debe preguntar la fecha real al usuario.
+    falta_fecha: boolean;
     empresa: string;
     ruc: string;
     n_factura: string;
@@ -122,6 +126,7 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
 
     return {
         fecha,
+        falta_fecha: !fechaValida,
         empresa,
         ruc,
         n_factura: numero,

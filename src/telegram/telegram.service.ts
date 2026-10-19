@@ -93,6 +93,10 @@ export class TelegramService {
                 await this.manejarCorreccionMonto(chatId, estadoPrevio.gasto_id, message.text, estadoPrevio.meta?.items ?? []);
                 return;
             }
+            if (estadoPrevio?.esperando === 'corregir_fecha' && estadoPrevio.gasto_id && message.text) {
+                await this.manejarCorreccionFecha(chatId, estadoPrevio.gasto_id, message.text);
+                return;
+            }
 
             // Comando "/gastos" o "gastos": lista los últimos gastos con botón
             // para adjuntar comprobante a cada uno.
@@ -239,12 +243,16 @@ export class TelegramService {
                 await this.avisarPosibleDuplicado(chatId, resultado.gasto_id, resultado.posible_duplicado);
             }
 
-            // Si el gasto quedó en dólares y no estamos esperando que el
-            // usuario corrija el monto (confianza baja), guardamos el estado
-            // 'tipo_cambio' para que su próxima respuesta de texto sea
-            // interpretada como el tipo de cambio y el monto se convierta a
-            // soles automáticamente.
-            if (resultado.moneda === 'USD' && !pidioConfianza) {
+            // B1: si Gemini no pudo leer la fecha del documento, preguntamos
+            // la fecha real al usuario. Tiene prioridad sobre tipo_cambio.
+            if (resultado.falta_fecha && !pidioConfianza) {
+                await this.preguntarFechaFalta(chatId, resultado.gasto_id);
+            } else if (resultado.moneda === 'USD' && !pidioConfianza) {
+                // Si el gasto quedó en dólares y no estamos esperando que el
+                // usuario corrija el monto (confianza baja), guardamos el estado
+                // 'tipo_cambio' para que su próxima respuesta de texto sea
+                // interpretada como el tipo de cambio y el monto se convierta a
+                // soles automáticamente.
                 await this.telegramEstado.guardar(Number(chatId), 'tipo_cambio', resultado.gasto_id);
             }
         } catch (err) {
@@ -296,8 +304,42 @@ export class TelegramService {
         }
 
         if (!pidioConfianza) {
-            await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+            if (resultado.falta_fecha) {
+                await this.preguntarFechaFalta(chatId, resultado.gasto_id);
+            } else {
+                await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+            }
         }
+    }
+
+    // --- B1: fecha no leída por Gemini ---
+
+    private async preguntarFechaFalta(chatId: number | string, gastoId: number) {
+        await this.telegramEstado.guardar(Number(chatId), 'corregir_fecha', gastoId);
+        await this.enviarMensaje(
+            chatId,
+            '📅 No pude leer la fecha del comprobante. ¿Cuál es la fecha del gasto?\n' +
+            'Escríbela en formato <b>DD/MM/AAAA</b>, por ejemplo: <code>15/10/2024</code>',
+        );
+    }
+
+    private async manejarCorreccionFecha(chatId: number | string, gastoId: number, texto: string) {
+        await this.telegramEstado.limpiar(Number(chatId));
+        // Acepta DD/MM/AAAA o DD-MM-AAAA
+        const m = texto.trim().match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+        if (!m) {
+            await this.enviarMensaje(
+                chatId,
+                '❌ No reconocí esa fecha. Escríbela así: <b>DD/MM/AAAA</b>, por ejemplo: <code>15/10/2024</code>',
+            );
+            await this.telegramEstado.guardar(Number(chatId), 'corregir_fecha', gastoId);
+            return;
+        }
+        const [, dia, mes, anio] = m;
+        const fechaISO = `${anio}-${mes.padStart(2, '0')}-${dia.padStart(2, '0')}`;
+        await this.gastosService.actualizarFecha(gastoId, fechaISO);
+        await this.enviarMensaje(chatId, `✅ Fecha actualizada a <b>${dia.padStart(2, '0')}/${mes.padStart(2, '0')}/${anio}</b>.`);
+        await this.preguntarSiTieneComprobante(chatId, gastoId);
     }
 
     // --- Flujo 1: audio sin comprobante -> botones Sí/No ---
