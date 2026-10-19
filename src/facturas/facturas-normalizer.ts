@@ -5,20 +5,18 @@ function fechaHoyPeru(): string {
 }
 
 // Devuelve { fecha, pudoLeerla }. Cuando no se pudo interpretar la fecha
-// devuelta por Gemini, usamos la fecha de hoy como placeholder PERO avisamos
-// con pudoLeerla=false, para que el llamador baje la confianza a "baja" en
-// vez de guardar el gasto como si la fecha hubiera sido leída correctamente
-// (bug anterior: una fecha mal leída se disfrazaba de fecha válida).
-function normalizarFecha(f?: string | null): { fecha: string; pudoLeerla: boolean } {
+// devuelta por Gemini, devuelve fecha=null para que se guarde como null en BD
+// y el flujo de Telegram le pregunte la fecha real al usuario.
+function normalizarFecha(f?: string | null): { fecha: string | null; pudoLeerla: boolean } {
     const s = f != null ? String(f).trim() : '';
-    if (!s) return { fecha: fechaHoyPeru(), pudoLeerla: false };
+    if (!s) return { fecha: null, pudoLeerla: false };
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return { fecha: s, pudoLeerla: true };
     const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
     if (m) {
         const [, dia, mes, anio] = m;
         return { fecha: `${anio}-${mes.padStart(2, '0')}-${dia.padStart(2, '0')}`, pudoLeerla: true };
     }
-    return { fecha: fechaHoyPeru(), pudoLeerla: false };
+    return { fecha: null, pudoLeerla: false };
 }
 
 function normalizarRuc(r?: string | null): string {
@@ -49,7 +47,11 @@ function normalizarConfianza(c?: string | null): NivelConfianza {
 }
 
 export interface FacturaNormalizada {
-    fecha: string;
+    fecha: string | null;
+    // B1: true cuando Gemini no pudo leer la fecha del documento.
+    // La fecha guardada en DB es la de hoy como placeholder; Telegram
+    // debe preguntar la fecha real al usuario.
+    falta_fecha: boolean;
     empresa: string;
     ruc: string;
     n_factura: string;
@@ -122,6 +124,7 @@ export function normalizarFactura(data: FacturaExtraida): FacturaNormalizada {
 
     return {
         fecha,
+        falta_fecha: !fechaValida,
         empresa,
         ruc,
         n_factura: numero,
