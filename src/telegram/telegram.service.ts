@@ -339,7 +339,15 @@ export class TelegramService {
         const fechaISO = `${anio}-${mes.padStart(2, '0')}-${dia.padStart(2, '0')}`;
         await this.gastosService.actualizarFecha(gastoId, fechaISO);
         await this.enviarMensaje(chatId, `✅ Fecha actualizada a <b>${dia.padStart(2, '0')}/${mes.padStart(2, '0')}/${anio}</b>.`);
-        await this.preguntarSiTieneComprobante(chatId, gastoId);
+        // Si el gasto es de imagen (tiene proveedor), el comprobante ya existe;
+        // solo preguntamos categoría si falta. Si es audio/texto libre, preguntamos comprobante.
+        const gasto = await this.gastosService.obtenerPorId(gastoId);
+        if (gasto.proveedor_id) {
+            await this.preguntarComprobanteSiFalta(chatId, gastoId);
+            await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
+        } else {
+            await this.preguntarSiTieneComprobante(chatId, gastoId);
+        }
     }
 
     // --- Flujo 1: audio sin comprobante -> botones Sí/No ---
@@ -820,17 +828,25 @@ export class TelegramService {
 
         await this.gastosService.corregirMonto(gastoId, monto);
         await this.telegramEstado.limpiar(Number(chatId));
-        const gastoParaMoneda = await this.gastosService.obtenerPorId(gastoId);
-        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a ${this.fmtMonto(monto, gastoParaMoneda.moneda)}.`);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
+        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a ${this.fmtMonto(monto, gasto.moneda)}.`);
         // Audio: sin proveedor ni comprobante → flujo empresa → personal/empresa → comprobante.
         // Imagen: tiene proveedor → flujo comprobante → categoría.
+        // En ambos casos, si la fecha sigue null (B1), se pregunta antes de continuar.
         if (!gasto.proveedor_id) {
+            if (!gasto.fecha) {
+                await this.preguntarFechaFalta(chatId, gastoId);
+                return;
+            }
             const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, gasto.usuario_id);
             if (!empresaPendiente) {
                 await this.manejarTipoAudioConItems(chatId, gastoId, items, gasto.usuario_id);
             }
         } else {
+            if (!gasto.fecha) {
+                await this.preguntarFechaFalta(chatId, gastoId);
+                return;
+            }
             await this.preguntarComprobanteSiFalta(chatId, gastoId);
             await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
         }
@@ -961,13 +977,18 @@ export class TelegramService {
             if (accion === 'media_ok') {
                 await this.gastosService.confirmarConfianza(gastoId);
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
+                // B1: si la fecha sigue null, preguntar antes de continuar.
+                const gastoTrasConfirmar = await this.gastosService.obtenerPorId(gastoId);
+                if (!gastoTrasConfirmar.fecha) {
+                    await this.preguntarFechaFalta(chatId, gastoId);
+                    return;
+                }
                 await this.preguntarComprobanteSiFalta(chatId, gastoId);
                 await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
                 // Si no hizo falta preguntar categoría (ya la tenía), la
                 // cadena que termina en preguntarPedidoSiFalta no se dispara
                 // -- se cubre acá. preguntarPedidoSiFalta ya sale temprano si
                 // el gasto tiene pedido, así que no duplica la pregunta.
-                const gastoTrasConfirmar = await this.gastosService.obtenerPorId(gastoId);
                 if (gastoTrasConfirmar.categoria_id) {
                     await this.preguntarPedidoSiFalta(chatId, gastoId);
                 }

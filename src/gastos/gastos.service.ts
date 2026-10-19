@@ -531,7 +531,12 @@ export class GastosService {
     // con una captura de pago (Yape/transferencia) y la factura llegó después,
     // se corrige a la fecha de la factura.
     async actualizarFecha(gastoId: number, fecha: string) {
-        const { error } = await this.supabase.getClient().from('gastos').update({ fecha }).eq('id', gastoId);
+        // Al corregir la fecha también se apaga pendiente_revision: la fecha nula era
+        // el único motivo pendiente cuando el user llega a responder esta pregunta.
+        const { error } = await this.supabase.getClient()
+            .from('gastos')
+            .update({ fecha, pendiente_revision: false })
+            .eq('id', gastoId);
         if (error) {
             throw new InternalServerErrorException(`Error actualizando la fecha: ${error.message}`);
         }
@@ -540,9 +545,14 @@ export class GastosService {
     async corregirMonto(gastoId: number, monto: number) {
         const client = this.supabase.getClient();
 
+        // Si la fecha sigue siendo null, el gasto sigue pendiente de revisión
+        // (Telegram preguntará la fecha justo después de esta corrección).
+        const { data: existente } = await client.from('gastos').select('fecha').eq('id', gastoId).single();
+        const pendienteRevision = existente?.fecha == null;
+
         const { data: gasto, error } = await client
             .from('gastos')
-            .update({ monto, confianza: 'alta', pendiente_revision: false })
+            .update({ monto, confianza: 'alta', pendiente_revision: pendienteRevision })
             .eq('id', gastoId)
             .select('*')
             .single();
@@ -896,12 +906,14 @@ export class GastosService {
     }
 
     async confirmarConfianza(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+        const gastoExistente = await this.obtenerPorId(gastoId, empresaId); // 404 si no existe
+        // Si la fecha sigue null, el gasto sigue pendiente hasta que Telegram la pida.
+        const pendienteRevision = gastoExistente.fecha == null;
 
         let query = this.supabase
             .getClient()
             .from('gastos')
-            .update({ confianza: 'alta', pendiente_revision: false })
+            .update({ confianza: 'alta', pendiente_revision: pendienteRevision })
             .eq('id', gastoId);
         query = aplicarFiltroEmpresa(query as any, empresaId) as any;
         const { data: gasto, error } = await query.select('*').single();
