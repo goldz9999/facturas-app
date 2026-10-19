@@ -2,28 +2,22 @@ import {
   BadRequestException,
   Controller,
   Post,
-  Query,
+  Request,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { FacturasService } from './facturas.service';
 
+@UseGuards(JwtAuthGuard)
 @Controller('facturas')
 export class FacturasController {
   constructor(private readonly facturasService: FacturasService) { }
 
-  // GET /facturas (findAll) se eliminó: consultaba la tabla vieja
-  // `facturas`/`factura_items`, previa a la migración al esquema
-  // gastos/comprobantes/pagos/evidencias. Confirmado contra Supabase real
-  // (proyecto Registrodefacturasn8n): ambas tablas están en 0 filas y
-  // ningún flujo activo (Telegram ni /facturas/upload) escribe en ellas.
-  // La fuente de verdad de gastos hoy es GET /gastos/:id y
-  // GET /gastos/usuario/:usuarioId/ultimos (ver GastosController).
-
-  // Recibe uno o varios archivos (imágenes o documentos) desde el frontend.
-  // "usuario_id" es obligatorio: todo gasto queda vinculado al usuario que
-  // lo subió.
+  // S1: endpoint ahora requiere JWT. usuario_id se toma del token, no del
+  // query string, para que nadie pueda crear gastos a nombre de otro usuario.
   @Post('upload')
   @UseInterceptors(
     FilesInterceptor('files', 10, {
@@ -32,15 +26,12 @@ export class FacturasController {
   )
   async upload(
     @UploadedFiles() files: Array<Express.Multer.File>,
-    @Query('usuario_id') usuarioId?: string,
+    @Request() req: any,
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('No se recibió ningún archivo.');
     }
-    if (!usuarioId) {
-      throw new BadRequestException('usuario_id es obligatorio.');
-    }
-    return this.facturasService.procesarArchivos(files, Number(usuarioId));
+    return this.facturasService.procesarArchivos(files, req.user.id);
   }
 
   // El webhook de Telegram (POST /facturas/telegram/webhook) vive ahora en

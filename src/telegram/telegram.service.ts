@@ -169,10 +169,10 @@ export class TelegramService {
             let pidioConfianza = false;
             if (!resultado.vinculado_a) {
                 if (resultado.confianza === 'media') {
-                    await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total);
+                    await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total, resultado.moneda);
                     pidioConfianza = true;
                 } else if (resultado.confianza === 'baja') {
-                    await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, resultado.items ?? []);
+                    await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, resultado.items ?? [], resultado.moneda);
                     pidioConfianza = true;
                 }
             }
@@ -288,10 +288,10 @@ export class TelegramService {
         // usa el flujo de archivos, para no encimar dos preguntas seguidas).
         let pidioConfianza = false;
         if (resultado.confianza === 'media') {
-            await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total);
+            await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total, resultado.moneda);
             pidioConfianza = true;
         } else if (resultado.confianza === 'baja') {
-            await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total);
+            await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, undefined, resultado.moneda);
             pidioConfianza = true;
         }
 
@@ -334,7 +334,8 @@ export class TelegramService {
             const sumar = (arr: any[]) => arr.reduce((s, i) => s + (Number(i.costo) || 0), 0);
             const montoP = sumar(personales);
             const montoE = sumar(empresa);
-            const fmt = (n: number) => `S/ ${n.toFixed(2)}`;
+            const gastoMixto = await this.gastosService.obtenerPorId(gastoId);
+            const fmt = (n: number) => this.fmtMonto(n, gastoMixto.moneda);
             const listP = personales.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
             const listE = empresa.map((i) => `  • ${i.producto}${i.costo ? ' (' + fmt(Number(i.costo)) + ')' : ''}`).join('\n');
             const msg = `⚠️ Detecté ítems mezclados:\n\n🙋 <b>Personal</b> — ${fmt(montoP)}\n${listP}\n\n🏢 <b>Empresa</b> — ${fmt(montoE)}\n${listE}\n\n¿Qué hago?`;
@@ -729,10 +730,16 @@ export class TelegramService {
 
     // --- Confianza media/baja: confirmación o corrección de monto ---
 
-    private async confirmarConfianzaMedia(chatId: number | string, gastoId: number, montoDetectado: number) {
+    // B6: helper para mostrar el símbolo correcto según moneda
+    private fmtMonto(monto: number, moneda?: string | null): string {
+        const simbolo = moneda === 'USD' ? 'US$' : 'S/';
+        return `${simbolo} ${Number(monto).toFixed(2)}`;
+    }
+
+    private async confirmarConfianzaMedia(chatId: number | string, gastoId: number, montoDetectado: number, moneda?: string) {
         await this.enviarMensaje(
             chatId,
-            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: S/ ${Number(montoDetectado).toFixed(2)}). ¿Está correcto?`,
+            `⚠️ No estoy 100% seguro de haber leído bien este comprobante (monto detectado: ${this.fmtMonto(montoDetectado, moneda)}). ¿Está correcto?`,
             {
                 inline_keyboard: [
                     [
@@ -744,16 +751,17 @@ export class TelegramService {
         );
     }
 
-    private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number, items?: any[]) {
+    private async pedirCorreccionMonto(chatId: number | string, gastoId: number, montoDetectado: number, items?: any[], moneda?: string) {
         const montoFmt = Number(montoDetectado).toFixed(2);
+        const montoLabel = this.fmtMonto(montoDetectado, moneda);
         await this.telegramEstado.guardar(Number(chatId), 'confirmar_monto', gastoId, { items: items ?? [] });
         await this.enviarMensaje(
             chatId,
-            `🔎 No pude leer bien este comprobante (monto detectado: S/ ${montoFmt}, puede estar mal). ` +
+            `🔎 No pude leer bien este comprobante (monto detectado: ${montoLabel}, puede estar mal). ` +
             `¿Cuál es el monto correcto?`,
             {
                 inline_keyboard: [
-                    [{ text: `✅ S/ ${montoFmt} (está bien)`, callback_data: `monto_ok:${gastoId}:${montoFmt}` }],
+                    [{ text: `✅ ${montoLabel} (está bien)`, callback_data: `monto_ok:${gastoId}:${montoFmt}` }],
                 ],
             },
         );
@@ -770,7 +778,8 @@ export class TelegramService {
 
         await this.gastosService.corregirMonto(gastoId, monto);
         await this.telegramEstado.limpiar(Number(chatId));
-        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a S/ ${monto.toFixed(2)}.`);
+        const gastoParaMoneda = await this.gastosService.obtenerPorId(gastoId);
+        await this.enviarMensaje(chatId, `✅ Listo, corregí el monto a ${this.fmtMonto(monto, gastoParaMoneda.moneda)}.`);
         const gasto = await this.gastosService.obtenerPorId(gastoId);
         // Audio: sin proveedor ni comprobante → flujo empresa → personal/empresa → comprobante.
         // Imagen: tiene proveedor → flujo comprobante → categoría.
@@ -967,6 +976,10 @@ export class TelegramService {
                     esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
                 );
                 await this.preguntarSiTieneComprobante(chatId, gastoId);
+                // B4: los gastos de audio también necesitan categoría
+                if (!esPersonal) {
+                    await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
+                }
                 return;
             }
 
@@ -1016,6 +1029,10 @@ export class TelegramService {
                     esPersonal ? '🙋 Guardado como gasto personal.' : '🏢 Guardado como gasto de empresa.',
                 );
                 await this.preguntarSiTieneComprobante(chatId, gastoId);
+                // B4: los gastos de audio también necesitan categoría
+                if (!esPersonal) {
+                    await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
+                }
                 return;
             }
 
@@ -1043,11 +1060,14 @@ export class TelegramService {
                             : undefined,
                     });
                 }
+                const gastoSeparado = await this.gastosService.obtenerPorId(gastoId);
                 await this.enviarMensaje(
                     chatId,
-                    `✂️ Separado.\n🏢 Empresa: S/ ${montoEmpresa.toFixed(2)}\n🙋 Personal: S/ ${montoPersonal.toFixed(2)}`,
+                    `✂️ Separado.\n🏢 Empresa: ${this.fmtMonto(montoEmpresa, gastoSeparado.moneda)}\n🙋 Personal: ${this.fmtMonto(montoPersonal, gastoSeparado.moneda)}`,
                 );
                 await this.preguntarSiTieneComprobante(chatId, gastoId);
+                // B4: el gasto de empresa separado también necesita categoría
+                await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
                 return;
             }
 
