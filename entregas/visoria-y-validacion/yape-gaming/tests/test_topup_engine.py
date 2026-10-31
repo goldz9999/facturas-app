@@ -124,7 +124,7 @@ def supplier(id, provider, *, priority=1, variant_key="100d", subtype=1, have_ro
 def make(suppliers, fx_rates=None, **providers):
     store = FakeStore(suppliers)
     redis = FakeRedis()
-    return TopupEngine(providers, store, redis, fx_rates=fx_rates), store, redis
+    return TopupEngine(providers, store, redis, fx=fx_rates), store, redis
 
 
 ACCOUNT = {"user_id": "123456", "zone_id": "77"}
@@ -567,7 +567,69 @@ def test_name_mismatch_on_prepared_provider_is_skipped():
     assert res["status"] == "failed" and not hank.execute_calls
 
 
-def test_parse_fx_rates():
-    from app.topups.engine import parse_fx_rates
-    assert parse_fx_rates("PEN=0.27, eur=1.08,bad") == {"USD": 1.0, "PEN": 0.27, "EUR": 1.08}
-    assert parse_fx_rates(None) == {"USD": 1.0}
+class LiveRates:
+    def __init__(self, rates):
+        self.calls = 0
+        self._rates = rates
+
+    async def rates(self):
+        self.calls += 1
+        return self._rates
+
+
+def test_live_fx_object_is_used_for_order():
+    coda, hank = FakeProvider("coda"), FakeProvider("hankgames")
+    fx = LiveRates({"USD": 1.0, "PEN": 1 / 3.75})
+    suppliers = [supplier(1, "coda", cost=5.0, currency="PEN"), supplier(2, "hankgames", priority=2, cost=1.5)]
+    engine, _, _ = make(suppliers, fx_rates=fx, coda=coda, hankgames=hank)
+    _, res = run(validate_and_execute(engine))
+    assert res["provider"] == "coda" and fx.calls == 1      # 5 PEN ≈ 1.33 USD < 1.5 USD
+
+
+def test_fx_failure_falls_back_to_usd_only():
+    class Broken:
+        async def rates(self):
+            raise RuntimeError("down")
+    coda, hank = FakeProvider("coda"), FakeProvider("hankgames")
+    suppliers = [supplier(1, "coda", cost=1.0, currency="PEN"), supplier(2, "hankgames", priority=2, cost=9.0)]
+    engine, _, _ = make(suppliers, fx_rates=Broken(), coda=coda, hankgames=hank)
+    _, res = run(validate_and_execute(engine))
+    assert res["provider"] == "hankgames"                    # PEN sin tasa → al final, nunca sin convertir
+
+
+# ── Costos al día ────────────────────────────────────────────────────────
+
+class PricedProvider(FakeProvider):
+    def __init__(self, code, price=None, fail=False, **kw):
+        super().__init__(code, **kw)
+        self.price, self.fail, self.price_calls = price, fail, 0
+
+    async def current_price(self, supplier, cache):
+        self.price_calls += 1
+        if self.fail:
+            raise RuntimeError("timeout")
+        return self.price
+
+
+def test_refresh_costs_updates_only_grouped_and_changed():
+    coda = PricedProvider("coda", price=(2.10, "usd"))
+    hank = PricedProvider("hankgames", price=(1.5, "USD"))       # igual al guardado: no se toca
+    suppliers = [supplier(1, "coda"), supplier(2, "hankgames", priority=2),
+                 supplier(3, "coda", variant_key="sola")]         # sin respaldo: no se consulta
+    engine, store, _ = make(suppliers, coda=coda, hankgames=hank)
+    store.updates = []
+    store.active_suppliers = lambda: [copy.deepcopy(x) for x in store.suppliers]
+    store.update_cost = lambda sid, amount, cur: store.updates.append((sid, amount, cur))
+    assert run(engine.refresh_costs_once()) == 1
+    assert store.updates == [(1, 2.10, "USD")]
+    assert coda.price_calls == 1 and hank.price_calls == 1
+
+
+def test_refresh_costs_keeps_price_when_provider_fails():
+    coda = PricedProvider("coda", fail=True)
+    hank = PricedProvider("hankgames", price=None)
+    engine, store, _ = make([supplier(1, "coda"), supplier(2, "hankgames", priority=2)], coda=coda, hankgames=hank)
+    store.updates = []
+    store.active_suppliers = lambda: [copy.deepcopy(x) for x in store.suppliers]
+    store.update_cost = lambda *a: store.updates.append(a)
+    assert run(engine.refresh_costs_once()) == 0 and store.updates == []

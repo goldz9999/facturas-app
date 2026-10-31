@@ -82,8 +82,9 @@ from app.providers.base import FULFILLED, REJECTED, UNCERTAIN, CatalogEntry, Dir
 from app.providers.coda_client import CodaProvider
 from app.providers.hankgames_client import HankgamesProvider
 from app.providers.visoria_client import VisoriaProvider
-from app.topups.engine import TopupEngine, parse_fx_rates
-from app.topups.router import build_router as build_topups_router, reconcile_loop
+from app.topups.engine import TopupEngine
+from app.topups.fx import LiveFxRates
+from app.topups.router import build_router as build_topups_router, price_refresh_loop, reconcile_loop
 from app.topups.store import TopupStore
 from app.redeem.router import build_router as build_redeem_router, reconcile_loop as redeem_reconcile_loop
 from app.redeem.security import Captcha, RateLimiter
@@ -572,10 +573,10 @@ app.include_router(visoria_router)
 # ════════════════════════════════════════════════════════════════════════
 
 INTERNAL_TOPUP_KEY = os.environ.get("INTERNAL_TOPUP_KEY", "")
-# Para recargar con el proveedor más barato: costos en otras monedas se
-# pasan a USD. Ej: TOPUP_FX_TO_USD="PEN=0.27,EUR=1.08".
-topup_engine = TopupEngine(PROVIDERS, TopupStore(supabase), redis_client,
-                           fx_rates=parse_fx_rates(os.environ.get("TOPUP_FX_TO_USD")))
+# Para recargar con el proveedor más barato, los costos en otras monedas se
+# pasan a USD con el tipo de cambio en vivo (EXCHANGE_RATE_API_KEY, la misma
+# del backend principal).
+topup_engine = TopupEngine(PROVIDERS, TopupStore(supabase), redis_client, fx=LiveFxRates(redis_client))
 app.include_router(build_topups_router(topup_engine, INTERNAL_TOPUP_KEY))
 
 
@@ -583,6 +584,8 @@ app.include_router(build_topups_router(topup_engine, INTERNAL_TOPUP_KEY))
 async def _start_topup_reconcile() -> None:
     if INTERNAL_TOPUP_KEY:
         app.state.topup_reconcile = asyncio.create_task(reconcile_loop(topup_engine, redis_client))
+    # Costos al día para recargar con el más barato (también lo usan los canjes).
+    app.state.topup_prices = asyncio.create_task(price_refresh_loop(topup_engine, redis_client))
     app.state.redeem_reconcile = asyncio.create_task(redeem_reconcile_loop(redeem_service, redis_client))
 
 

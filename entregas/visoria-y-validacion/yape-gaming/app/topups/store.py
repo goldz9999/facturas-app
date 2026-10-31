@@ -49,6 +49,14 @@ class TopupStore:
         rows = [r for r in rows if effective_variant_key(r) == variant_key]
         return sorted(rows, key=lambda r: (r.get("priority") or 1, r["id"]))
 
+    def active_suppliers(self) -> list[dict]:
+        return self.db.table("direct_topup_suppliers").select("*").eq("is_active", True).execute().data or []
+
+    def update_cost(self, supplier_id: int, cost_price: float, cost_currency: str) -> None:
+        self.db.table("direct_topup_suppliers") \
+            .update({"cost_price": cost_price, "cost_currency": cost_currency}) \
+            .eq("id", supplier_id).execute()
+
     # ── Ejecuciones ─────────────────────────────────────────────────────
 
     def get_execution(self, consumer: str, request_id: str) -> Optional[dict]:

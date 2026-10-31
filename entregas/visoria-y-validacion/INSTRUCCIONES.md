@@ -27,9 +27,9 @@ El canje de códigos del WordPress sigue exigiendo el nombre.
 - **Se intenta primero la variante con menor costo.** Si la rechaza, la siguiente más barata, y así hasta la más cara.
 - **El que validó también entra**, en el lugar que le toque por precio.
 - **Solo pasa al siguiente si el proveedor rechazó.** Si quedó en proceso o sin confirmar, se detiene para no recargar dos veces.
-- **Costos en otras monedas:** se pasan a USD con la variable `TOPUP_FX_TO_USD`, por ejemplo `PEN=0.27`.
-- **Una variante sin costo, o en una moneda que no está en esa variable**, va al final.
-- **Para que el orden sea bueno**, los costos tienen que estar al día. Usa el botón de refrescar precio de cada variante.
+- **Costos en otras monedas:** se pasan a USD con el tipo de cambio **en vivo**. Es el mismo servicio que ya usa tu backend (exchangerate-api, con `EXCHANGE_RATE_API_KEY`). Se consulta como mucho cada 6 horas y, si falla, se usa la última tasa conocida.
+- **Los costos se actualizan solos:** cada 30 minutos, yape-gaming pide el precio vigente a Coda, Hankgames y Visoria para las variantes que tienen respaldo. Lo guarda si cambió y, si un proveedor no responde, conserva el anterior.
+- **Una variante sin costo, o en una moneda sin tasa**, va al final. Nunca se compara un monto sin convertir.
 
 ### 3. "Usar para validar" (por variante)
 - En el panel, al agregar o editar una variante de Coda o Hankgames, hay un interruptor **Usar para validar la cuenta**.
@@ -76,7 +76,7 @@ Los dos se pueden correr más de una vez. Los probé en Postgres, dos veces cada
 | Servicio | Variable | Valor |
 |---|---|---|
 | yape-gaming | `VISORIA_API_KEY` | La key de Visoria |
-| yape-gaming | `TOPUP_FX_TO_USD` | Ej. `PEN=0.27`. Sin ella, solo se comparan costos en USD |
+| yape-gaming | `EXCHANGE_RATE_API_KEY` | La misma que ya tiene el backend principal (fastapi-gift-cards) |
 | fastapi-gift-cards | `VISORIA_API_KEY` | La misma key |
 
 ### 4. Archivos y deploy
@@ -87,11 +87,16 @@ Los dos se pueden correr más de una vez. Los probé en Postgres, dos veces cada
 |---|---|
 | `app/topups/engine.py` | Reemplazar |
 | `app/topups/store.py` | Reemplazar |
+| `app/topups/router.py` | Reemplazar (refresco de costos cada 30 min) |
+| `app/topups/fx.py` | Nuevo (tipo de cambio en vivo) |
 | `app/main.py` | Reemplazar |
 | `app/providers/visoria_client.py` | Nuevo |
+| `app/providers/coda_client.py` | Reemplazar (precio vigente para el refresco) |
+| `app/providers/hankgames_client.py` | Reemplazar (precio vigente para el refresco) |
 | `supabase_migrations/20261031_topup_validates.sql` | Nuevo (el del paso 1) |
 | `tests/test_topup_engine.py` | Reemplazar (pruebas) |
 | `tests/test_visoria.py` | Nuevo (pruebas) |
+| `tests/test_fx.py` | Nuevo (pruebas) |
 
 El motor funciona aunque todavía no hayas corrido el SQL: si falta la columna, toma todas las variantes como "valida".
 
@@ -144,7 +149,7 @@ Partí de los zips de ayer. Si cambiaste alguno de estos archivos después, no l
 
 | Repo | Comando | Resultado |
 |---|---|---|
-| yape-gaming | `python -m pytest tests` (necesita `pip install pytest respx`) | 68 pasan (32 nuevas) |
+| yape-gaming | `python -m pytest tests` (necesita `pip install pytest respx`) | 78 pasan (42 nuevas) |
 | fastapi-gift-cards | `SUPABASE_URL=http://x SUPABASE_SERVICE_KEY=x python -m pytest tests/test_visoria.py tests/test_provider_http_monitor_cardone.py` (necesita `respx`) | 17 pasan |
 | codes-hub | `python -m pytest` | 125 pasan (ya en `main`) |
 | Panel | `npx vitest run` | 44 pasan; `tsc` sigue con los mismos 11 errores que ya tenías |

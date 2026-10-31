@@ -16,7 +16,9 @@ Flujo:
      nombre. Queda guardada en Redis 5 min con un validation_id.
   2. execute(): con ese validation_id y un request_id del consumidor.
      La recarga va del proveedor MÁS BARATO al más caro (cost_price,
-     convertido a USD con TOPUP_FX_TO_USD); a igual costo decide `priority`.
+     convertido a USD con el tipo de cambio en vivo, ver app/topups/fx.py);
+     a igual costo decide `priority`. Los costos se refrescan solos desde
+     cada proveedor (refresh_costs_once, cada 30 min).
      - El request_id es único por consumidor (fila en
        direct_topup_executions creada ANTES de llamar a ningún
        proveedor): repetir la petición devuelve la misma ejecución, nunca
@@ -44,7 +46,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.providers.base import FULFILLED, PROCESSING, REJECTED, UNCERTAIN, ExecResult
-from app.topups.store import TopupStore
+from app.topups.store import TopupStore, effective_variant_key
 
 logger = logging.getLogger(__name__)
 
@@ -90,18 +92,6 @@ def names_match(expected: Optional[str], got: Optional[str], user_id: str) -> bo
     return a == b
 
 
-def parse_fx_rates(raw: Optional[str]) -> dict[str, float]:
-    """"PEN=0.27,EUR=1.08" → {"PEN": 0.27, "EUR": 1.08, "USD": 1.0}. Valores inválidos se ignoran."""
-    rates = {"USD": 1.0}
-    for part in (raw or "").split(","):
-        code, _, value = part.partition("=")
-        try:
-            rates[code.strip().upper()] = float(value)
-        except ValueError:
-            continue
-    return rates
-
-
 def cost_in_usd(supplier: dict, rates: dict[str, float]) -> Optional[float]:
     try:
         cost = float(supplier.get("cost_price"))
@@ -144,11 +134,23 @@ def public_execution(row: dict) -> dict:
 
 
 class TopupEngine:
-    def __init__(self, providers: dict, store: TopupStore, redis_client, fx_rates: Optional[dict] = None):
+    def __init__(self, providers: dict, store: TopupStore, redis_client, fx=None):
         self.providers = providers
         self.store = store
         self.redis = redis_client
-        self.fx_rates = fx_rates or {"USD": 1.0}
+        # dict fijo (pruebas) u objeto con `async rates()` (LiveFxRates).
+        self.fx = fx
+
+    async def _fx_rates(self) -> dict:
+        if self.fx is None:
+            return {"USD": 1.0}
+        if isinstance(self.fx, dict):
+            return self.fx
+        try:
+            return await self.fx.rates()
+        except Exception:
+            logger.exception("[Topups] no se pudo obtener el tipo de cambio")
+            return {"USD": 1.0}
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -245,7 +247,7 @@ class TopupEngine:
         if _restricted(chosen):
             same = chosen.get("provider") or "coda"
             chain = [s for s in chain if (s.get("provider") or "coda") == same]
-        chain = execution_order(chain, self.fx_rates)
+        chain = execution_order(chain, await self._fx_rates())
 
         user_name = chosen_result.user_name if name_verified else None
         validation_id = uuid.uuid4().hex
@@ -391,6 +393,44 @@ class TopupEngine:
             "status": "failed",
             "error": last_error or "Ningún proveedor pudo hacer la recarga.",
         })
+
+    # ── Costos al día (para recargar con el más barato) ─────────────────
+
+    async def refresh_costs_once(self) -> int:
+        """Consulta el precio vigente de las variantes que tienen respaldo y
+        actualiza cost_price/cost_currency si cambió. Devuelve cuántas cambió.
+
+        Solo las de grupos con 2+ proveedores: ahí el costo decide el orden.
+        Si un proveedor no responde, se conserva el precio que había.
+        """
+        groups: dict[tuple, list[dict]] = {}
+        for s in self.store.active_suppliers():
+            groups.setdefault((s["product_id"], effective_variant_key(s)), []).append(s)
+        changed = 0
+        cache: dict = {}   # una consulta por juego/producto en cada pasada
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            for s in members:
+                provider = self.providers.get(s.get("provider") or "coda")
+                getter = getattr(provider, "current_price", None)
+                if not getter:
+                    continue
+                try:
+                    price = await getter(s, cache)
+                except Exception as e:
+                    logger.warning("[Topups] sin precio de %s para supplier=%s: %s", s.get("provider"), s["id"], e)
+                    continue
+                if not price:
+                    continue
+                amount, currency = float(price[0]), (price[1] or s.get("cost_currency") or "USD").upper()
+                old = s.get("cost_price")
+                if old is not None and abs(float(old) - amount) < 0.0001 and (s.get("cost_currency") or "").upper() == currency:
+                    continue
+                self.store.update_cost(s["id"], amount, currency)
+                logger.info("[Topups] costo supplier=%s (%s): %s → %s %s", s["id"], s.get("provider"), old, amount, currency)
+                changed += 1
+        return changed
 
     # ── Consultar / reconciliar ─────────────────────────────────────────
 

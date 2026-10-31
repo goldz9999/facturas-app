@@ -177,3 +177,14 @@ def test_field_mapping_rules():
         {"field_name": "playerId", "value_code": "1"}, {"field_name": "serverId", "value_code": "s9"}]
     with pytest.raises(vc.MissingField):
         vc.build_custom_value([{"field_name": "characterId", "input_type": "lookup", "required": True}], {"user_id": "1"})
+
+
+@respx.mock
+def test_current_price_is_always_fresh():
+    route = respx.get(f"{BASE}/v1/products/p-ml-86").mock(side_effect=[
+        httpx.Response(200, json=ML), httpx.Response(200, json={**ML, "price": 1.25})])
+    provider = vc.VisoriaProvider()
+    supplier = {"coda_sku": "p-ml-86"}
+    assert run(provider.current_price(supplier, {})) == (1.32, "USD")
+    assert run(provider.current_price(supplier, {})) == (1.25, "USD")
+    assert route.call_count == 2

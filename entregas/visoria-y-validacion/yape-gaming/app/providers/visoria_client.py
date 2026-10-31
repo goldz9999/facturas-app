@@ -235,6 +235,14 @@ class VisoriaProvider:
     async def get_catalog(self) -> dict[str, CatalogEntry]:
         return {}
 
+    async def current_price(self, supplier: dict, cache: dict) -> Optional[tuple]:
+        """Precio vigente (monto, moneda) del producto de esta variante."""
+        _product_cache.pop(supplier["coda_sku"], None)   # siempre fresco
+        product = await get_product(supplier["coda_sku"])
+        if product.get("price") is None:
+            return None
+        return float(product["price"]), product.get("currency_code")
+
     async def list_servers(self, ref: str) -> list[dict]:
         try:
             product = await get_product(ref)
