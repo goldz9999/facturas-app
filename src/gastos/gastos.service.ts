@@ -130,7 +130,7 @@ export interface CrearGastoParams {
     empresa_id?: number | null;
     descripcion?: string | null;
     monto: number;
-    fecha: string; // YYYY-MM-DD
+    fecha: string | null; // YYYY-MM-DD, null cuando Gemini no pudo leer la fecha
     es_personal?: boolean;
     categoria_id?: number | null;
     proveedor_id?: number | null;
@@ -193,7 +193,7 @@ export class GastosService {
                 monto: params.monto,
                 fecha: params.fecha,
                 confianza: params.confianza ?? null,
-                pendiente_revision: params.confianza === 'media' || params.confianza === 'baja',
+                pendiente_revision: params.confianza === 'media' || params.confianza === 'baja' || params.fecha == null || params.categoria_id == null,
             })
             .select('*')
             .single();
@@ -369,7 +369,7 @@ export class GastosService {
             .eq('usuario_id', usuarioId)
             .gte('creado_en', desde)
             .order('creado_en', { ascending: false })
-            .limit(5);
+            .limit(20);
 
         if (error) {
             throw new InternalServerErrorException(
@@ -531,7 +531,13 @@ export class GastosService {
     // con una captura de pago (Yape/transferencia) y la factura llegó después,
     // se corrige a la fecha de la factura.
     async actualizarFecha(gastoId: number, fecha: string) {
-        const { error } = await this.supabase.getClient().from('gastos').update({ fecha }).eq('id', gastoId);
+        // Apaga pendiente_revision solo si ya tiene categoría asignada.
+        const { data: existente } = await this.supabase.getClient().from('gastos').select('categoria_id').eq('id', gastoId).single();
+        const pendienteRevision = existente?.categoria_id == null;
+        const { error } = await this.supabase.getClient()
+            .from('gastos')
+            .update({ fecha, pendiente_revision: pendienteRevision })
+            .eq('id', gastoId);
         if (error) {
             throw new InternalServerErrorException(`Error actualizando la fecha: ${error.message}`);
         }
@@ -540,9 +546,13 @@ export class GastosService {
     async corregirMonto(gastoId: number, monto: number) {
         const client = this.supabase.getClient();
 
+        // Si la fecha o la categoría siguen siendo null, el gasto sigue pendiente.
+        const { data: existente } = await client.from('gastos').select('fecha, categoria_id').eq('id', gastoId).single();
+        const pendienteRevision = existente?.fecha == null || existente?.categoria_id == null;
+
         const { data: gasto, error } = await client
             .from('gastos')
-            .update({ monto, confianza: 'alta', pendiente_revision: false })
+            .update({ monto, confianza: 'alta', pendiente_revision: pendienteRevision })
             .eq('id', gastoId)
             .select('*')
             .single();
@@ -550,12 +560,22 @@ export class GastosService {
             throw new InternalServerErrorException(`Error corrigiendo el monto: ${error.message}`);
         }
 
-        const { error: errComp } = await client
+        // B3: actualiza solo el comprobante más reciente del gasto, no todos.
+        // Actualizar todos sobreescribe comprobantes históricos con el mismo total.
+        const { data: comps } = await client
             .from('comprobantes')
-            .update({ total: monto })
-            .eq('gasto_id', gastoId);
-        if (errComp) {
-            throw new InternalServerErrorException(`Error actualizando el comprobante: ${errComp.message}`);
+            .select('id')
+            .eq('gasto_id', gastoId)
+            .order('creado_en', { ascending: false })
+            .limit(1);
+        if (comps && comps.length > 0) {
+            const { error: errComp } = await client
+                .from('comprobantes')
+                .update({ total: monto })
+                .eq('id', comps[0].id);
+            if (errComp) {
+                throw new InternalServerErrorException(`Error actualizando el comprobante: ${errComp.message}`);
+            }
         }
 
         return gasto;
@@ -639,14 +659,18 @@ export class GastosService {
     ) {
         const tolerancia = 0.5; // soles
 
+        // S5: la detección entre usuarios SIEMPRE filtra por empresa para no
+        // exponer nombres ni montos de usuarios de otra empresa.
+        if (empresaId == null) return null;
+
         let query = this.supabase
             .getClient()
             .from('gastos')
             .select('*, usuarios(nombre), comprobantes(numero), proveedores(ruc), pagos(numero_operacion)')
             .neq('usuario_id', usuarioId)
+            .eq('empresa_id', empresaId)
             .order('creado_en', { ascending: false })
             .limit(200);
-        if (empresaId != null) query = query.eq('empresa_id', empresaId);
         if (gastoIdActual != null) query = query.neq('id', gastoIdActual);
 
         const { data, error } = await query;
@@ -882,12 +906,14 @@ export class GastosService {
     }
 
     async confirmarConfianza(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+        const gastoExistente = await this.obtenerPorId(gastoId, empresaId); // 404 si no existe
+        // Sigue pendiente si falta la fecha o la categoría.
+        const pendienteRevision = gastoExistente.fecha == null || gastoExistente.categoria_id == null;
 
         let query = this.supabase
             .getClient()
             .from('gastos')
-            .update({ confianza: 'alta', pendiente_revision: false })
+            .update({ confianza: 'alta', pendiente_revision: pendienteRevision })
             .eq('id', gastoId);
         query = aplicarFiltroEmpresa(query as any, empresaId) as any;
         const { data: gasto, error } = await query.select('*').single();
@@ -1276,15 +1302,20 @@ export class GastosService {
             await this.pedidosService.validarDeEmpresa(cambios.pedido_id, gastoActual.empresa_id);
         }
 
+        // B2: pendiente_revision solo se limpia cuando el usuario asigna
+        // categoría (o marca como personal/empresa) -- no al editar descripción
+        // o monto solamente, que no resuelven la revisión. Además, la fecha
+        // tiene que estar resuelta: si sigue null, el gasto sigue pendiente.
+        const resuelveRevision = campos.categoria_id !== undefined || campos.es_personal !== undefined;
+        const categoriaFinal = campos.categoria_id !== undefined ? campos.categoria_id : gastoActual.categoria_id;
+        const fechaFinal = gastoActual.fecha; // actualizar no cambia la fecha
+        const updateData: Record<string, any> = { ...campos };
+        if (resuelveRevision && categoriaFinal != null && fechaFinal != null) updateData.pendiente_revision = false;
+
         let query = this.supabase
             .getClient()
             .from('gastos')
-            .update({
-                ...campos,
-                // Confirmar desde el panel resuelve la revisión pendiente,
-                // igual que la confirmación por Telegram.
-                pendiente_revision: false,
-            })
+            .update(updateData)
             .eq('id', gastoId);
 
         // Defensa en profundidad: aunque obtenerPorId ya validó la empresa

@@ -462,6 +462,29 @@ El JSON debe cumplir exactamente esta estructura:
 "Confianza": "alta|media|baja"
 }`;
 
+// B5: prompt chain-of-thought para extraer en UNA sola llamada preservando la
+// calidad del pipeline de dos pasos. A diferencia del deprecated (que pedía
+// extracción directa de la imagen), este prompt le ordena a Gemini que
+// PRIMERO transcriba todo el texto visible y DESPUÉS extraiga los campos
+// estructurados basándose en su propia transcripción. El JSON de salida
+// incluye "Transcripcion" como campo de razonamiento, lo que obliga al
+// modelo a leer letra a letra antes de interpretar, recuperando la precisión
+// que se perdía al combinar ambos pasos en un solo prompt de extracción.
+const SYSTEM_PROMPT_COT_IMAGEN = SYSTEM_PROMPT_EXTRACCION_FACTURA.replace(
+    'Eres un sistema de extracción estructurada especializado en comprobantes de pago de Perú.\n\nTu tarea es convertir el texto OCR proporcionado en un objeto JSON estructurado.',
+    `Eres un sistema de extracción estructurada especializado en comprobantes de pago de Perú.
+
+Tu tarea tiene DOS PASOS OBLIGATORIOS que debes ejecutar en orden:
+
+PASO 1 — TRANSCRIPCIÓN: Lee el archivo adjunto y transcribe TODO el texto visible, palabra por palabra y número por número, exactamente como aparece. No interpretes, no corrijas, no normalices. Incluye la transcripción en el campo "Transcripcion" del JSON de salida.
+
+PASO 2 — EXTRACCIÓN: Basándote EXCLUSIVAMENTE en lo que transcribiste en el Paso 1 (no en lo que crees que dice el documento), extrae los campos estructurados según las reglas de este prompt.
+
+Si en la transcripción un dato es ilegible o ausente, devuelve el valor vacío/null correspondiente — nunca inventes ni deduzcas más allá del texto transcripto.
+
+Tu tarea es convertir el texto del archivo adjunto en un objeto JSON estructurado que incluye la transcripción y los campos extraídos.`,
+);
+
 // Variante de SYSTEM_PROMPT_EXTRACCION_FACTURA para leer DIRECTO desde la
 // imagen/documento en una sola llamada a Gemini, en vez de transcribir texto
 // primero y extraer después (dos llamadas). Mismas reglas de extracción,
@@ -936,6 +959,19 @@ export class GeminiService {
             [
                 { inline_data: { mime_type: mimeType, data: buffer.toString('base64') } },
                 { text: SYSTEM_PROMPT_EXTRACCION_FACTURA_IMAGEN },
+            ],
+            { responseMimeType: 'application/json' },
+        );
+        return this.parsearRespuestaJson(raw);
+    }
+
+    // B5: variante chain-of-thought — una sola llamada que primero transcribe
+    // y luego extrae, preservando la precisión del pipeline de dos pasos.
+    async extraerFacturaEnUnPaso(buffer: Buffer, mimeType: string): Promise<FacturaExtraida> {
+        const raw = await this.generateContent(
+            [
+                { inline_data: { mime_type: mimeType, data: buffer.toString('base64') } },
+                { text: SYSTEM_PROMPT_COT_IMAGEN },
             ],
             { responseMimeType: 'application/json' },
         );

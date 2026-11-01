@@ -30,8 +30,14 @@ export class TelegramController {
         @Body() update: any,
         @Headers('x-telegram-bot-api-secret-token') secretHeader: string | undefined,
     ) {
+        // S4: la variable es obligatoria en producción. Si no está configurada
+        // el arranque falla igual que con JWT_SECRET, pero aquí lo detectamos
+        // en cada request para no romper despliegues en tránsito.
         const secretEsperado = this.config.get<string>('TELEGRAM_WEBHOOK_SECRET');
-        if (secretEsperado && secretHeader !== secretEsperado) {
+        if (!secretEsperado) {
+            throw new UnauthorizedException('TELEGRAM_WEBHOOK_SECRET no configurado en el servidor');
+        }
+        if (secretHeader !== secretEsperado) {
             throw new UnauthorizedException('Secret token inválido');
         }
         // Se responde 200 de inmediato; el procesamiento (incluyendo el mensaje
