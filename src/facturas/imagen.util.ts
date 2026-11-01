@@ -4,6 +4,9 @@ const sharp = require('sharp');
 // Calidad de compresión WebP. 80 es un buen balance: reduce bastante el
 // peso del archivo sin degradar la legibilidad de una factura/comprobante.
 const CALIDAD_WEBP = 80;
+// Lado máximo (ancho o alto) en píxeles. Imágenes más grandes se escalan
+// hacia abajo manteniendo la proporción; las más pequeñas no se tocan.
+const MAX_LADO = 1600;
 
 export interface ArchivoConvertido {
     buffer: Buffer;
@@ -27,7 +30,11 @@ export async function convertirImagenAWebp(
     }
 
     try {
-        const bufferWebp = await sharp(buffer).webp({ quality: CALIDAD_WEBP }).toBuffer();
+        const bufferWebp = await sharp(buffer)
+            .rotate()
+            .resize(MAX_LADO, MAX_LADO, { fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: CALIDAD_WEBP })
+            .toBuffer();
         return { buffer: bufferWebp, mimetype: 'image/webp', ext: 'webp' };
     } catch (err) {
         // Si sharp no puede procesar la imagen (formato raro, archivo
