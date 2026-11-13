@@ -111,7 +111,7 @@ export class GastosController {
     @Get(':id')
     async obtenerPorId(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.obtenerPorId(id, empresaId);
+        return this.gastosService.obtenerPorId(id, empresaId, req.user.id);
     }
 
     // Guardar cambios / Confirmar gasto desde ExpenseDetail.
@@ -140,7 +140,7 @@ export class GastosController {
         // podría escribir cualquier columna (empresa_id, usuario_id, ...).
         const permitidos = ['monto', 'descripcion', 'es_personal', 'categoria_id', 'proveedor_id', 'pedido_id', 'proveedor_nombre', 'proveedor_ruc', 'medio_pago'] as const;
         const cambios = Object.fromEntries(permitidos.filter((k) => body?.[k] !== undefined).map((k) => [k, body[k]]));
-        return this.gastosService.actualizar(id, cambios, empresaId);
+        return this.gastosService.actualizar(id, cambios, empresaId, req.user.id);
     }
 
     // Bandeja de revisión (ReviewInbox.jsx): el usuario confirma que un
@@ -151,7 +151,7 @@ export class GastosController {
     @Patch(':id/confirmar-confianza')
     async confirmarConfianza(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.confirmarConfianza(id, empresaId);
+        return this.gastosService.confirmarConfianza(id, empresaId, req.user.id);
     }
 
     // Vista de duplicados (DuplicatesReview.jsx): el usuario confirma que sí
@@ -162,7 +162,7 @@ export class GastosController {
     @Patch(':id/confirmar-duplicado')
     async confirmarDuplicado(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.confirmarDuplicado(id, empresaId);
+        return this.gastosService.confirmarDuplicado(id, empresaId, req.user.id);
     }
 
     // Vista de duplicados: el usuario confirma que NO es el mismo pago (dos
@@ -172,7 +172,7 @@ export class GastosController {
     @Patch(':id/descartar-duplicado')
     async descartarDuplicado(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.descartarDuplicado(id, empresaId);
+        return this.gastosService.descartarDuplicado(id, empresaId, req.user.id);
     }
 
     // Botón "X" de ReviewInbox.jsx: el usuario descarta un gasto mal
@@ -182,7 +182,7 @@ export class GastosController {
     @Patch(':id/rechazar')
     async rechazar(@Param('id', ParseIntPipe) id: number, @Query('empresa_id') empresaIdQuery: string | undefined, @Request() req) {
         const empresaId = resolverEmpresaIdFiltro(req, empresaIdQuery);
-        return this.gastosService.rechazar(id, empresaId);
+        return this.gastosService.rechazar(id, empresaId, req.user.id);
     }
 
     @Post(':id/comprobante')

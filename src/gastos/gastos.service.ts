@@ -765,8 +765,8 @@ export class GastosService {
     // empresaId opcional (Paso 38.1): las llamadas internas desde Telegram
     // (callback dup_no) no lo pasan -- ahí la validación de dueño ya existe
     // por otro mecanismo (esDuenoDelGasto).
-    async descartarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+    async descartarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null, usuarioId?: number) {
+        await this.obtenerPorId(gastoId, empresaId, usuarioId); // 404 si no existe o no es de esta empresa
 
         let query = this.supabase
             .getClient()
@@ -789,8 +789,8 @@ export class GastosService {
     // apaga es `pendiente_revision`, porque una persona ya lo validó; si no
     // se apagara, este gasto quedaría para siempre en cualquier vista futura
     // de "pendientes de revisar" (RF-20) aunque ya esté resuelto.
-    async confirmarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+    async confirmarDuplicado(gastoId: number, empresaId?: EmpresaFiltro | null, usuarioId?: number) {
+        await this.obtenerPorId(gastoId, empresaId, usuarioId); // 404 si no existe o no es de esta empresa
 
         let query = this.supabase
             .getClient()
@@ -881,8 +881,8 @@ export class GastosService {
         return gasto;
     }
 
-    async confirmarConfianza(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+    async confirmarConfianza(gastoId: number, empresaId?: EmpresaFiltro | null, usuarioId?: number) {
+        await this.obtenerPorId(gastoId, empresaId, usuarioId); // 404 si no existe o no es de esta empresa
 
         let query = this.supabase
             .getClient()
@@ -1202,7 +1202,7 @@ export class GastosService {
         );
     }
 
-    async obtenerPorId(gastoId: number, empresaId?: EmpresaFiltro | null) {
+    async obtenerPorId(gastoId: number, empresaId?: EmpresaFiltro | null, usuarioId?: number) {
         const { data, error } = await this.supabase
             .getClient()
             .from('gastos')
@@ -1218,7 +1218,11 @@ export class GastosService {
         if (!data) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
-        if (empresaId !== undefined && empresaId !== null && !perteneceAFiltroEmpresa(data.empresa_id, empresaId)) {
+        if (data.es_personal) {
+            if (usuarioId !== undefined && data.usuario_id !== usuarioId) {
+                throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
+            }
+        } else if (empresaId !== undefined && empresaId !== null && !perteneceAFiltroEmpresa(data.empresa_id, empresaId)) {
             throw new NotFoundException(`Gasto ${gastoId} no encontrado`);
         }
 
@@ -1248,12 +1252,13 @@ export class GastosService {
             medio_pago: MedioPago;
         }>,
         empresaId?: EmpresaFiltro | null,
+        usuarioId?: number,
     ) {
         const { proveedor_nombre, proveedor_ruc, medio_pago, ...campos } = cambios;
         if (medio_pago !== undefined && !(MEDIOS_PAGO as readonly string[]).includes(medio_pago)) {
             throw new BadRequestException('Medio de pago no válido.');
         }
-        const gastoActual = await this.obtenerPorId(gastoId, empresaId); // valida existencia + empresa, 404 si no
+        const gastoActual = await this.obtenerPorId(gastoId, empresaId, usuarioId); // valida existencia + empresa, 404 si no
 
         if (campos.es_personal === true && !gastoActual.es_personal && !(await this.personalPermitido(gastoActual.usuario_id))) {
             throw new BadRequestException('Quien registró este gasto no tiene permitido registrar gastos personales. Lo decide el propietario.');
@@ -1406,8 +1411,8 @@ export class GastosService {
     // empresaId opcional para no romper el resto del código si algo interno
     // llama a esto sin pasar empresa -- pero el controller HTTP (único
     // caller real, botón "X" de ReviewInbox) SIEMPRE lo pasa desde ahora.
-    async rechazar(gastoId: number, empresaId?: EmpresaFiltro | null) {
-        const gasto = await this.obtenerPorId(gastoId, empresaId); // 404 si no existe o no es de esta empresa
+    async rechazar(gastoId: number, empresaId?: EmpresaFiltro | null, usuarioId?: number) {
+        const gasto = await this.obtenerPorId(gastoId, empresaId, usuarioId); // 404 si no existe o no es de esta empresa
 
         const client = this.supabase.getClient();
 
