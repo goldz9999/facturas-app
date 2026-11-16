@@ -292,14 +292,14 @@ export class TelegramService {
 
         // Igual que con audio: confianza media pregunta, baja pide corregir
         // el monto directamente; si ninguna de las dos aplicó, recién ahí
-        // preguntamos si tiene comprobante para adjuntar (mismo orden que
-        // usa el flujo de archivos, para no encimar dos preguntas seguidas).
+        // preguntamos empresa (si tiene varias) y luego personal/empresa
+        // (mismo orden que usa el flujo de archivos/audio).
         let pidioConfianza = false;
         if (resultado.confianza === 'media') {
             await this.confirmarConfianzaMedia(chatId, resultado.gasto_id, resultado.total, resultado.moneda);
             pidioConfianza = true;
         } else if (resultado.confianza === 'baja') {
-            await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, undefined, resultado.moneda);
+            await this.pedirCorreccionMonto(chatId, resultado.gasto_id, resultado.total, resultado.items ?? [], resultado.moneda);
             pidioConfianza = true;
         }
 
@@ -307,7 +307,10 @@ export class TelegramService {
             if (resultado.falta_fecha) {
                 await this.preguntarFechaFalta(chatId, resultado.gasto_id);
             } else {
-                await this.preguntarSiTieneComprobante(chatId, resultado.gasto_id);
+                const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, resultado.gasto_id, usuarioId);
+                if (!empresaPendiente) {
+                    await this.manejarTipoAudioConItems(chatId, resultado.gasto_id, resultado.items ?? [], usuarioId);
+                }
             }
         }
     }
@@ -346,7 +349,11 @@ export class TelegramService {
             await this.preguntarComprobanteSiFalta(chatId, gastoId);
             await this.preguntarCategoriaSiFalta(chatId, gastoId, gasto.usuario_id);
         } else {
-            await this.preguntarSiTieneComprobante(chatId, gastoId);
+            // Texto libre/audio: mismo flujo que tras registrar (empresa y luego personal/empresa).
+            const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, gasto.usuario_id);
+            if (!empresaPendiente) {
+                await this.manejarTipoAudioConItems(chatId, gastoId, [], gasto.usuario_id);
+            }
         }
     }
 
@@ -977,20 +984,27 @@ export class TelegramService {
             if (accion === 'media_ok') {
                 await this.gastosService.confirmarConfianza(gastoId);
                 await this.enviarMensaje(chatId, '👍 Perfecto, quedó confirmado.');
-                // B1: si la fecha sigue null, preguntar antes de continuar.
                 const gastoTrasConfirmar = await this.gastosService.obtenerPorId(gastoId);
+                // B1: si la fecha sigue null, preguntar antes de continuar.
                 if (!gastoTrasConfirmar.fecha) {
                     await this.preguntarFechaFalta(chatId, gastoId);
                     return;
                 }
-                await this.preguntarComprobanteSiFalta(chatId, gastoId);
-                await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
-                // Si no hizo falta preguntar categoría (ya la tenía), la
-                // cadena que termina en preguntarPedidoSiFalta no se dispara
-                // -- se cubre acá. preguntarPedidoSiFalta ya sale temprano si
-                // el gasto tiene pedido, así que no duplica la pregunta.
-                if (gastoTrasConfirmar.categoria_id) {
-                    await this.preguntarPedidoSiFalta(chatId, gastoId);
+                if (!gastoTrasConfirmar.proveedor_id) {
+                    const empresaPendiente = await this.preguntarEmpresaSiFalta(chatId, gastoId, usuario.id);
+                    if (!empresaPendiente) {
+                        await this.manejarTipoAudioConItems(chatId, gastoId, [], usuario.id);
+                    }
+                } else {
+                    await this.preguntarComprobanteSiFalta(chatId, gastoId);
+                    await this.preguntarCategoriaSiFalta(chatId, gastoId, usuario.id);
+                    // Si no hizo falta preguntar categoría (ya la tenía), la
+                    // cadena que termina en preguntarPedidoSiFalta no se dispara
+                    // -- se cubre acá. preguntarPedidoSiFalta ya sale temprano si
+                    // el gasto tiene pedido, así que no duplica la pregunta.
+                    if (gastoTrasConfirmar.categoria_id) {
+                        await this.preguntarPedidoSiFalta(chatId, gastoId);
+                    }
                 }
                 return;
             }

@@ -31,6 +31,6 @@ describe('GastosController', () => {
     it('PATCH solo deja pasar los campos editables', async () => {
         const { c, svc } = mk();
         await c.actualizar(5, { monto: 10, empresa_id: 99, usuario_id: 1, proveedor_ruc: null, medio_pago: 'yape' } as any, '1', req);
-        expect(svc.actualizar).toHaveBeenCalledWith(5, { monto: 10, proveedor_ruc: null, medio_pago: 'yape' }, 1);
+        expect(svc.actualizar).toHaveBeenCalledWith(5, { monto: 10, proveedor_ruc: null, medio_pago: 'yape' }, 1, req.user.id);
     });
 });
