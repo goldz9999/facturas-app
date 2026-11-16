@@ -149,13 +149,12 @@ export class FacturasService {
     }
 
     // 2+3. Transcribir + extraer con Gemini.
-    // REVERTIDO (ver nota en GeminiService.extraerFacturaDeImagen): la
-    // versión de "una sola llamada" multimodal perdía precisión en
-    // comprobantes manuscritos/desordenados (perdía cantidades y
-    // anotaciones, y a veces no leía bien la fecha). Volvemos a las dos
-    // llamadas secuenciales (transcribirImagenODocumento -> texto plano,
-    // luego extraerFactura -> JSON): el paso de transcripción dedicado le da
-    // a Gemini mejor terreno para leer letra por letra antes de estructurar.
+    // B5: para imágenes/documentos usamos extraerFacturaEnUnPaso, que envía
+    // un único prompt chain-of-thought: Gemini transcribe y luego extrae en
+    // la misma llamada. Preserva la precisión del pipeline de dos pasos
+    // (el modelo lee letra a letra antes de interpretar) reduciendo la
+    // latencia a la mitad. Audio sigue con transcripción separada porque el
+    // pipeline de texto libre reutiliza el texto para otras tareas.
     // El upload a Storage sigue corriendo en paralelo (no depende de Gemini).
     const resultado = esAudio
       ? await (async () => {
@@ -171,9 +170,9 @@ export class FacturasService {
           return resultadoFinal;
         })()
       : await (async () => {
-        const textoTranscrito = await this.gemini.transcribirImagenODocumento(file.buffer, mimeType);
-        const resultadoFinal = await this.procesarTextoExtraido(
-          textoTranscrito,
+        const datosExtraidos = await this.gemini.extraerFacturaEnUnPaso(file.buffer, mimeType);
+        const resultadoFinal = await this.procesarDatosExtraidos(
+          datosExtraidos,
           usuarioId,
           origen,
           false,
@@ -533,7 +532,7 @@ export class FacturasService {
             const duplicado = await this.gastosService.buscarPosibleDuplicadoEntreUsuarios(
               usuarioId,
               montoDetectado,
-              factura.fecha,
+              factura.fecha ?? '',
               datosComprobante.numero,
               proveedorId,
               factura.ruc || null,
@@ -585,6 +584,8 @@ export class FacturasService {
       posible_duplicado: posibleDuplicado,
       proveedor_id: proveedorId,
       falta_categoria: faltaPreguntarCategoria,
+      // B1: true cuando Gemini no leyó la fecha; Telegram debe pedírsela al usuario.
+      falta_fecha: factura.falta_fecha,
       // RF-11: pista en texto libre, sin resolver. TelegramService la
       // resuelve contra los pedidos de la empresa del gasto y, si hay una
       // sola coincidencia, la propone; si hay varias o ninguna, muestra la
@@ -618,11 +619,7 @@ export class FacturasService {
     // WebP antes de subir (ahorro de espacio); Gemini sigue leyendo el
     // buffer original más abajo.
     //
-    // El upload a Storage sigue corriendo en paralelo con Gemini (son
-    // independientes). REVERTIDO el atajo de "una sola llamada" a Gemini
-    // (ver nota en gemini.service.ts extraerFacturaDeImagen): volvemos a
-    // transcribir + extraer como dos round-trips secuenciales, porque en
-    // comprobantes manuscritos perdía precisión (items y fecha).
+    // B5: una sola llamada chain-of-thought a Gemini en paralelo con el upload.
     const convertida = await convertirImagenAWebp(file.buffer, mimeType);
     const bufferASubir = convertida?.buffer ?? file.buffer;
     const mimeASubir = convertida?.mimetype ?? mimeType;
@@ -630,8 +627,8 @@ export class FacturasService {
       ? `telegram_${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`
       : nombreArchivo;
 
-    const [textoTranscrito] = await Promise.all([
-      this.gemini.transcribirImagenODocumento(file.buffer, mimeType),
+    const [datosExtraidos] = await Promise.all([
+      this.gemini.extraerFacturaEnUnPaso(file.buffer, mimeType),
       this.supabase
         .getClient()
         .storage.from(BUCKET)
@@ -642,7 +639,6 @@ export class FacturasService {
           }
         }),
     ]);
-    const datosExtraidos = await this.gemini.extraerFactura(textoTranscrito, false);
     const factura = normalizarFactura(datosExtraidos);
 
     const { comprobante, pago } = await this.gastosService.adjuntarComprobante(
